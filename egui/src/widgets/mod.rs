@@ -152,3 +152,90 @@ pub fn global_dark_light_mode_buttons(ui: &mut Ui) {
     visuals.light_dark_radio_buttons(ui);
     ui.ctx().set_visuals(visuals);
 }
+
+pub(crate) fn paint_axis(
+    ui: &Ui,
+    axis: usize,
+    transform: &plot::transform::ScreenTransform,
+    shapes: &mut Vec<Shape>,
+) {
+    let bounds = transform.bounds();
+    let text_style = TextStyle::Body;
+
+    let base: i64 = 10;
+    let basef = base as f64;
+
+    let min_line_spacing_in_points = 6.0; // TODO: large enough for a wide label
+    let step_size = transform.dvalue_dpos()[axis] * min_line_spacing_in_points;
+    let step_size = basef.powi(step_size.abs().log(basef).ceil() as i32);
+
+    let step_size_in_points = (transform.dpos_dvalue()[axis] * step_size).abs() as f32;
+
+    // Where on the cross-dimension to show the label values
+    let value_cross = 0.0_f64.clamp(bounds.min[1 - axis], bounds.max[1 - axis]);
+
+    for i in 0.. {
+        let value_main = step_size * (bounds.min[axis] / step_size + i as f64).floor();
+        if value_main > bounds.max[axis] {
+            break;
+        }
+
+        let value = if axis == 0 {
+            plot::Value::new(value_main, value_cross)
+        } else {
+            plot::Value::new(value_cross, value_main)
+        };
+        let pos_in_gui = transform.position_from_value(&value);
+
+        let n = (value_main / step_size).round() as i64;
+        let spacing_in_points = if n % (base * base) == 0 {
+            step_size_in_points * (basef * basef) as f32 // think line (multiple of 100)
+        } else if n % base == 0 {
+            step_size_in_points * basef as f32 // medium line (multiple of 10)
+        } else {
+            step_size_in_points // thin line
+        };
+
+        let line_alpha = remap_clamp(
+            spacing_in_points,
+            (min_line_spacing_in_points as f32)..=300.0,
+            0.0..=0.15,
+        );
+
+        if line_alpha > 0.0 {
+            let line_color = color_from_alpha(ui, line_alpha);
+
+            let mut p0 = pos_in_gui;
+            let mut p1 = pos_in_gui;
+            p0[1 - axis] = transform.frame().min[1 - axis];
+            p1[1 - axis] = transform.frame().max[1 - axis];
+            shapes.push(Shape::line_segment([p0, p1], Stroke::new(1.0, line_color)));
+        }
+
+        let text_alpha = remap_clamp(spacing_in_points, 40.0..=150.0, 0.0..=0.4);
+
+        if text_alpha > 0.0 {
+            let color = color_from_alpha(ui, text_alpha);
+            let text = emath::round_to_decimals(value_main, 5).to_string(); // hack
+
+            let galley = ui.painter().layout_no_wrap(text, text_style, color);
+
+            let mut text_pos = pos_in_gui + vec2(1.0, -galley.size().y);
+
+            // Make sure we see the labels, even if the axis is off-screen:
+            text_pos[1 - axis] = text_pos[1 - axis]
+                .at_most(transform.frame().max[1 - axis] - galley.size()[1 - axis] - 2.0)
+                .at_least(transform.frame().min[1 - axis] + 1.0);
+
+            shapes.push(Shape::galley(text_pos, galley));
+        }
+    }
+
+    fn color_from_alpha(ui: &Ui, alpha: f32) -> Color32 {
+        if ui.visuals().dark_mode {
+            Rgba::from_white_alpha(alpha).into()
+        } else {
+            Rgba::from_black_alpha((4.0 * alpha).at_most(1.0)).into()
+        }
+    }
+}
