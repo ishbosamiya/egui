@@ -660,7 +660,7 @@ impl PreparedPlot {
 
         for d in 0..2 {
             if self.show_axes[d] {
-                paint_axis(ui, d, &self.transform, &mut shapes);
+                paint_axis(ui, d, &self.transform, true, &mut shapes);
             }
         }
 

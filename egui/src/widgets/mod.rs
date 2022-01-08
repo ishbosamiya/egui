@@ -157,6 +157,7 @@ pub(crate) fn paint_axis(
     ui: &Ui,
     axis: usize,
     transform: &plot::transform::ScreenTransform,
+    show_text: bool,
     shapes: &mut Vec<Shape>,
 ) {
     let bounds = transform.bounds();
@@ -212,22 +213,24 @@ pub(crate) fn paint_axis(
             shapes.push(Shape::line_segment([p0, p1], Stroke::new(1.0, line_color)));
         }
 
-        let text_alpha = remap_clamp(spacing_in_points, 40.0..=150.0, 0.0..=0.4);
+        if show_text {
+            let text_alpha = remap_clamp(spacing_in_points, 40.0..=150.0, 0.0..=0.4);
 
-        if text_alpha > 0.0 {
-            let color = color_from_alpha(ui, text_alpha);
-            let text = emath::round_to_decimals(value_main, 5).to_string(); // hack
+            if text_alpha > 0.0 {
+                let color = color_from_alpha(ui, text_alpha);
+                let text = emath::round_to_decimals(value_main, 5).to_string(); // hack
 
-            let galley = ui.painter().layout_no_wrap(text, text_style, color);
+                let galley = ui.painter().layout_no_wrap(text, text_style, color);
 
-            let mut text_pos = pos_in_gui + vec2(1.0, -galley.size().y);
+                let mut text_pos = pos_in_gui + vec2(1.0, -galley.size().y);
 
-            // Make sure we see the labels, even if the axis is off-screen:
-            text_pos[1 - axis] = text_pos[1 - axis]
-                .at_most(transform.frame().max[1 - axis] - galley.size()[1 - axis] - 2.0)
-                .at_least(transform.frame().min[1 - axis] + 1.0);
+                // Make sure we see the labels, even if the axis is off-screen:
+                text_pos[1 - axis] = text_pos[1 - axis]
+                    .at_most(transform.frame().max[1 - axis] - galley.size()[1 - axis] - 2.0)
+                    .at_least(transform.frame().min[1 - axis] + 1.0);
 
-            shapes.push(Shape::galley(text_pos, galley));
+                shapes.push(Shape::galley(text_pos, galley));
+            }
         }
     }
 
