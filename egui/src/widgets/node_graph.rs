@@ -345,7 +345,11 @@ impl NodeGraph {
         }
     }
 
-    pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
+    pub fn show<R>(
+        mut self,
+        ui: &mut Ui,
+        add_contents: impl FnOnce(&mut Ui) -> R,
+    ) -> InnerResponse<R> {
         let center_x_axis = false;
         let center_y_axis = false;
 
@@ -412,8 +416,16 @@ impl NodeGraph {
             mut auto_bounds,
             last_screen_transform,
             selected_node,
+            node_positions,
             ..
         } = memory;
+
+        // force nodes to their respective positions
+        self.nodes.iter_mut().for_each(|node| {
+            if let Some(position) = node_positions.get(&node.id) {
+                node.position = *position;
+            }
+        });
 
         // --- Bound computation ---
         let mut bounds = *last_screen_transform.bounds();
@@ -460,6 +472,17 @@ impl NodeGraph {
         };
 
         let selected_node = self.ui(selected_node, ui, &response, &transform);
+
+        if let Some(selected_node) = selected_node {
+            if response.dragged_by(PointerButton::Primary) {
+                if let Some(node) = self.nodes.iter_mut().find(|node| node.id == selected_node) {
+                    node.position += Vec2::new(
+                        response.drag_delta().x * transform.dvalue_dpos()[0] as f32,
+                        response.drag_delta().y * transform.dvalue_dpos()[1] as f32,
+                    );
+                }
+            }
+        }
 
         let mut child_ui = ui.child_ui(rect, *ui.layout());
 
