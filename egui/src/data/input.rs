@@ -269,6 +269,11 @@ impl Modifiers {
     pub fn command_only(&self) -> bool {
         !self.alt && !self.shift && self.command
     }
+
+    #[inline(always)]
+    pub fn alt_only(&self) -> bool {
+        self.alt && !(self.shift || self.command)
+    }
 }
 
 /// Keyboard keys.
