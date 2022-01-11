@@ -205,6 +205,20 @@ impl ScreenTransform {
         }
     }
 
+    pub fn transformed_pos(&self, pos: &Pos2) -> Pos2 {
+        let x = remap(
+            pos.x,
+            self.bounds.min[0] as f32..=self.bounds.max[0] as f32,
+            (self.frame.left())..=(self.frame.right()),
+        );
+        let y = remap(
+            pos.y,
+            self.bounds.min[1] as f32..=self.bounds.max[1] as f32,
+            (self.frame.bottom())..=(self.frame.top()), // negated y axis!
+        );
+        pos2(x, y)
+    }
+
     pub fn position_from_value(&self, value: &Value) -> Pos2 {
         let x = remap(
             value.x,
