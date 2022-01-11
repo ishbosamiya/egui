@@ -107,7 +107,7 @@ impl NodeGraph {
         ui.painter().sub_region(*transform.frame()).extend(shapes);
     }
 
-    pub fn show(self, ui: &mut Ui) -> InnerResponse<()> {
+    pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let center_x_axis = false;
         let center_y_axis = false;
 
@@ -214,6 +214,10 @@ impl NodeGraph {
 
         self.ui(ui, &transform);
 
+        let mut child_ui = ui.child_ui(rect, ui.layout().clone());
+
+        let inner = add_contents(&mut child_ui);
+
         let memory = NodeGraphMemory {
             auto_bounds,
             min_auto_bounds: self.min_auto_bounds,
@@ -221,9 +225,6 @@ impl NodeGraph {
         };
         memory.store(ui.ctx(), node_graph_id);
 
-        InnerResponse {
-            inner: (),
-            response,
-        }
+        InnerResponse { inner, response }
     }
 }
