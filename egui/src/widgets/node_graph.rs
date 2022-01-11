@@ -2,12 +2,14 @@ use std::hash::Hash;
 
 use epaint::{
     emath::{Align2, NumExt},
+    util::FloatOrd,
     Pos2, Rect, Shape, TextStyle, Vec2,
 };
 
 use crate::{
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Sense, Ui, WidgetText,
+    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Response, Sense, Ui,
+    WidgetText,
 };
 
 pub struct Parameter {
@@ -74,7 +76,9 @@ impl Node {
             .fold(self, |acc, parameter| acc.output(parameter))
     }
 
-    fn ui(&self, ui: &mut Ui, transform: &ScreenTransform) {
+    /// Draw the ui and return the final footprint of the ui for
+    /// further interaction tests
+    fn ui(&self, selected: bool, ui: &mut Ui, transform: &ScreenTransform) -> Rect {
         ui.set_clip_rect(*transform.frame());
 
         let color = ui.style().visuals.text_color();
@@ -159,10 +163,19 @@ impl Node {
 
         ui.painter()
             .rect_filled(background_rect, 2.0, ui.style().visuals.faint_bg_color);
+        if selected {
+            ui.painter().rect_stroke(
+                background_rect.expand(ui.spacing().button_padding.x),
+                2.0,
+                ui.visuals().selection.stroke,
+            );
+        }
 
         let ui = ui.child_ui(background_rect, Layout::default());
 
         ui.painter().sub_region(*transform.frame()).extend(shapes);
+
+        background_rect
     }
 }
 
@@ -174,6 +187,7 @@ struct NodeGraphMemory {
     min_auto_bounds: PlotBounds,
     last_screen_transform: ScreenTransform,
     node_positions: IdMap<Pos2>,
+    selected_node: Option<Id>,
 }
 
 impl NodeGraphMemory {
@@ -266,7 +280,18 @@ impl NodeGraph {
         self
     }
 
-    fn ui(&self, ui: &mut Ui, transform: &ScreenTransform) {
+    /// Setup the UI.
+    ///
+    /// Returns the Node that must be selected for the next frame, if
+    /// no valid (wrt the node graph) interaction takes place, the
+    /// current selected node is returned.
+    fn ui(
+        &self,
+        selected_node: Option<Id>,
+        ui: &mut Ui,
+        response: &Response,
+        transform: &ScreenTransform,
+    ) -> Option<Id> {
         let mut shapes = Vec::new();
 
         if self.show_axis {
@@ -277,12 +302,47 @@ impl NodeGraph {
 
         ui.painter().sub_region(*transform.frame()).extend(shapes);
 
-        self.nodes.iter().for_each(|node| {
-            node.ui(
-                &mut ui.child_ui(*transform.frame(), Layout::default()),
-                transform,
-            );
-        });
+        let node_rects: Vec<Rect> = self
+            .nodes
+            .iter()
+            .map(|node| {
+                node.ui(
+                    match selected_node {
+                        Some(selected_node) => selected_node == node.id,
+                        None => false,
+                    },
+                    &mut ui.child_ui(*transform.frame(), Layout::default()),
+                    transform,
+                )
+            })
+            .collect();
+
+        if let Some(hover_pos) = response.hover_pos() {
+            if response.clicked_by(PointerButton::Primary) {
+                let interact_radius_sq: f32 = (16.0f32).powi(2);
+
+                node_rects
+                    .iter()
+                    .enumerate()
+                    .map(|(i, rect)| {
+                        let dist_sq = rect.distance_sq_to_pos(hover_pos);
+                        (i, dist_sq)
+                    })
+                    .min_by_key(|(_, dist_sq)| dist_sq.ord())
+                    .and_then(|(index, dist_sq)| {
+                        if dist_sq <= interact_radius_sq {
+                            Some(index)
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|index| self.nodes[index].id)
+            } else {
+                selected_node
+            }
+        } else {
+            selected_node
+        }
     }
 
     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
@@ -335,6 +395,7 @@ impl NodeGraph {
                     .iter()
                     .map(|node| (node.id, node.position))
                     .collect(),
+                selected_node: None,
             });
 
         // If the min bounds changed, recalculate everything.
@@ -350,6 +411,7 @@ impl NodeGraph {
         let NodeGraphMemory {
             mut auto_bounds,
             last_screen_transform,
+            selected_node,
             ..
         } = memory;
 
@@ -371,7 +433,9 @@ impl NodeGraph {
             transform.set_aspect(1.0);
 
             // Dragging
-            if response.dragged_by(PointerButton::Primary) {
+            if response.dragged_by(PointerButton::Middle)
+                || (ui.input().modifiers.alt_only() && response.dragged_by(PointerButton::Primary))
+            {
                 response = response.on_hover_cursor(CursorIcon::Grabbing);
                 transform.translate_bounds(-response.drag_delta());
                 auto_bounds = false;
@@ -395,7 +459,7 @@ impl NodeGraph {
             transform
         };
 
-        self.ui(ui, &transform);
+        let selected_node = self.ui(selected_node, ui, &response, &transform);
 
         let mut child_ui = ui.child_ui(rect, *ui.layout());
 
@@ -410,6 +474,7 @@ impl NodeGraph {
                 .iter()
                 .map(|node| (node.id, node.position))
                 .collect(),
+            selected_node,
         };
         memory.store(ui.ctx(), node_graph_id);
 
