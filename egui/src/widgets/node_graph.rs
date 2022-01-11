@@ -1,9 +1,170 @@
-use epaint::{emath::NumExt, Vec2};
+use std::hash::Hash;
+
+use epaint::{
+    emath::{Align2, NumExt},
+    Pos2, Rect, Shape, TextStyle, Vec2,
+};
 
 use crate::{
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, InnerResponse, PointerButton, Sense, Ui,
+    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Sense, Ui, WidgetText,
 };
+
+pub struct Parameter {
+    name: WidgetText,
+}
+
+impl Parameter {
+    pub fn new(name: impl Into<WidgetText>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+pub struct Node {
+    /// Id of the node, used to create unique Id(s) for the inputs and
+    /// outputs
+    id: Id,
+
+    name: WidgetText,
+    inputs: Vec<(Id, Parameter)>,
+    outputs: Vec<(Id, Parameter)>,
+
+    /// Position of top left of the node in the node graph
+    position: Pos2,
+}
+
+impl Node {
+    pub fn new(name: impl Into<WidgetText>, position: Pos2) -> Self {
+        let name = name.into();
+        Self {
+            id: Id::new(name.text()),
+            name,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            position,
+        }
+    }
+
+    pub fn id(mut self, id_source: impl Hash) -> Self {
+        self.id = Id::new(id_source);
+        self
+    }
+
+    pub fn input(mut self, parameter: Parameter) -> Self {
+        self.inputs
+            .push((self.id.with(parameter.name.text()), parameter));
+        self
+    }
+
+    pub fn inputs(self, parameters: Vec<Parameter>) -> Self {
+        parameters
+            .into_iter()
+            .fold(self, |acc, parameter| acc.input(parameter))
+    }
+
+    pub fn output(mut self, parameter: Parameter) -> Self {
+        self.outputs
+            .push((self.id.with(parameter.name.text()), parameter));
+        self
+    }
+
+    pub fn outputs(self, parameters: Vec<Parameter>) -> Self {
+        parameters
+            .into_iter()
+            .fold(self, |acc, parameter| acc.output(parameter))
+    }
+
+    fn ui(&self, ui: &mut Ui, transform: &ScreenTransform) {
+        ui.set_clip_rect(*transform.frame());
+
+        let color = ui.style().visuals.text_color();
+        let heading_galley =
+            ui.fonts()
+                .layout_no_wrap(self.name.text().to_string(), TextStyle::Heading, color);
+
+        let initial_pos = transform.transformed_pos(&self.position);
+        let pos = initial_pos + Vec2::new(0.0, heading_galley.size().y);
+
+        let mut shapes = Vec::new();
+
+        let mut inputs_param_size_x = None;
+        let mut inputs_param_size_y = 0.0;
+        self.inputs.iter().for_each(|(_id, input)| {
+            let text_style = TextStyle::Body;
+            let row_height = ui.fonts().row_height(text_style);
+            let galley =
+                ui.fonts()
+                    .layout_no_wrap(input.name.text().to_string(), text_style, color);
+            let rect = Align2::LEFT_TOP.anchor_rect(Rect::from_min_size(
+                pos + Vec2::new(0.0, inputs_param_size_y),
+                galley.size(),
+            ));
+
+            inputs_param_size_x = if let Some(inputs_param_size_x) = inputs_param_size_x {
+                Some(galley.size().x.max(inputs_param_size_x))
+            } else {
+                Some(galley.size().x)
+            };
+            inputs_param_size_y += row_height;
+
+            shapes.push(Shape::galley(rect.min, galley));
+        });
+        let inputs_param_size = Vec2::new(inputs_param_size_x.unwrap_or(0.0), inputs_param_size_y);
+
+        let gap = 25.0;
+        let pos = pos + Vec2::new(inputs_param_size.x + gap, 0.0);
+
+        let mut outputs_param_size_x = None;
+        let mut outputs_param_size_y = 0.0;
+        self.outputs.iter().for_each(|(_id, output)| {
+            let text_style = epaint::TextStyle::Body;
+            let row_height = ui.fonts().row_height(text_style);
+            let galley =
+                ui.fonts()
+                    .layout_no_wrap(output.name.text().to_string(), text_style, color);
+            let rect = Align2::LEFT_TOP.anchor_rect(Rect::from_min_size(
+                pos + Vec2::new(0.0, outputs_param_size_y),
+                galley.size(),
+            ));
+
+            outputs_param_size_x = if let Some(outputs_param_size_x) = outputs_param_size_x {
+                Some(galley.size().x.max(outputs_param_size_x))
+            } else {
+                Some(galley.size().x)
+            };
+            outputs_param_size_y += row_height;
+
+            shapes.push(Shape::galley(rect.min, galley));
+        });
+        let outputs_param_size =
+            Vec2::new(outputs_param_size_x.unwrap_or(0.0), outputs_param_size_y);
+
+        let heading_rect = Align2::CENTER_TOP.anchor_rect(Rect::from_min_size(
+            initial_pos
+                + Vec2::new(
+                    (inputs_param_size.x + gap + outputs_param_size.x) * 0.5,
+                    0.0,
+                ),
+            heading_galley.size(),
+        ));
+        shapes.push(Shape::galley(heading_rect.min, heading_galley));
+
+        let background_rect = Rect::from_min_size(
+            initial_pos,
+            Vec2::new(
+                inputs_param_size.x + gap + outputs_param_size.x,
+                inputs_param_size.y.max(outputs_param_size.y) + heading_rect.height(),
+            ),
+        );
+
+        ui.painter()
+            .rect_filled(background_rect, 2.0, ui.style().visuals.faint_bg_color);
+
+        let ui = ui.child_ui(background_rect, Layout::default());
+
+        ui.painter().sub_region(*transform.frame()).extend(shapes);
+    }
+}
 
 /// Information about the node graph that has to persist between frames.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -12,6 +173,7 @@ struct NodeGraphMemory {
     auto_bounds: bool,
     min_auto_bounds: PlotBounds,
     last_screen_transform: ScreenTransform,
+    node_positions: IdMap<Pos2>,
 }
 
 impl NodeGraphMemory {
@@ -40,6 +202,8 @@ pub struct NodeGraph {
     height: Option<f32>,
     /// Width / height ratio of the node graph region
     view_aspect: Option<f32>,
+
+    nodes: Vec<Node>,
 }
 
 impl NodeGraph {
@@ -55,6 +219,8 @@ impl NodeGraph {
             width: None,
             height: None,
             view_aspect: None,
+
+            nodes: Vec::new(),
         }
     }
 
@@ -95,6 +261,11 @@ impl NodeGraph {
         self
     }
 
+    pub fn node(mut self, node: Node) -> Self {
+        self.nodes.push(node);
+        self
+    }
+
     fn ui(&self, ui: &mut Ui, transform: &ScreenTransform) {
         let mut shapes = Vec::new();
 
@@ -105,6 +276,13 @@ impl NodeGraph {
         }
 
         ui.painter().sub_region(*transform.frame()).extend(shapes);
+
+        self.nodes.iter().for_each(|node| {
+            node.ui(
+                &mut ui.child_ui(*transform.frame(), Layout::default()),
+                transform,
+            );
+        });
     }
 
     pub fn show<R>(self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
@@ -152,6 +330,11 @@ impl NodeGraph {
                     center_x_axis,
                     center_y_axis,
                 ),
+                node_positions: self
+                    .nodes
+                    .iter()
+                    .map(|node| (node.id, node.position))
+                    .collect(),
             });
 
         // If the min bounds changed, recalculate everything.
@@ -214,7 +397,7 @@ impl NodeGraph {
 
         self.ui(ui, &transform);
 
-        let mut child_ui = ui.child_ui(rect, ui.layout().clone());
+        let mut child_ui = ui.child_ui(rect, *ui.layout());
 
         let inner = add_contents(&mut child_ui);
 
@@ -222,6 +405,11 @@ impl NodeGraph {
             auto_bounds,
             min_auto_bounds: self.min_auto_bounds,
             last_screen_transform: transform,
+            node_positions: self
+                .nodes
+                .iter()
+                .map(|node| (node.id, node.position))
+                .collect(),
         };
         memory.store(ui.ctx(), node_graph_id);
 
