@@ -474,7 +474,7 @@ impl NodeGraph {
         let selected_node = self.ui(selected_node, ui, &response, &transform);
 
         if let Some(selected_node) = selected_node {
-            if response.dragged_by(PointerButton::Primary) {
+            if response.dragged_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
                 if let Some(node) = self.nodes.iter_mut().find(|node| node.id == selected_node) {
                     node.position += Vec2::new(
                         response.drag_delta().x * transform.dvalue_dpos()[0] as f32,
