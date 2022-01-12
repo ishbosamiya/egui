@@ -12,6 +12,36 @@ use crate::{
     WidgetText,
 };
 
+enum InteractionType {
+    Node,
+    NodeEdge,
+    ParameterLinker(Id),
+}
+
+struct Interactable {
+    /// Id of the [`Node`] for which interaction may take place
+    node_id: Id,
+    /// Region of space covered by the interactable object
+    rect: Rect,
+    /// Interaction type of the interactable
+    interaction_type: InteractionType,
+}
+
+impl Interactable {
+    pub fn new(node_id: Id, rect: Rect, interaction_type: InteractionType) -> Self {
+        Self {
+            node_id,
+            rect,
+            interaction_type,
+        }
+    }
+
+    /// Translate the interactable region with the given delta.
+    pub fn translate(&mut self, delta: Vec2) {
+        self.rect = self.rect.translate(delta);
+    }
+}
+
 #[derive(PartialEq)]
 pub enum ParameterShape {
     Circle,
@@ -93,14 +123,17 @@ impl Parameter {
 
     /// Create the UI but do not paint it, add the shapes the must be
     /// painted to shapes
+    #[allow(clippy::too_many_arguments)]
     fn ui(
         &self,
+        node_id: Id,
+        parameter_id: Id,
         ui: &Ui,
         pos: Pos2,
         radius: f32,
         max_width: f32,
         is_input: bool,
-    ) -> (Vec<Shape>, Rect) {
+    ) -> (Vec<Shape>, Vec<Interactable>, Rect) {
         // TODO: need to scale the parameter based on the transform
 
         let text_style = TextStyle::Body;
@@ -137,10 +170,12 @@ impl Parameter {
         // hack: need the shape to be on the background rect, so shape
         // rect does not actually cover the whole shape, only half of
         // the shape.
-        let shape_rect = Rect::from_center_size(
+        let hack_shape_rect = Rect::from_center_size(
             center + Vec2::new(0.5 * radius, 0.0),
             Vec2::new(radius, 2.0 * radius),
         );
+
+        let shape_rect = Rect::from_center_size(center, Vec2::new(2.0 * radius, 2.0 * radius));
 
         let mut shapes = self.shape.get_shape(
             center,
@@ -154,11 +189,19 @@ impl Parameter {
             },
         );
 
-        let final_rect = shape_rect.union(text_rect);
+        let final_rect = hack_shape_rect.union(text_rect);
 
         shapes.push(Shape::galley(text_rect.min, galley));
 
-        (shapes, final_rect)
+        (
+            shapes,
+            vec![Interactable::new(
+                node_id,
+                shape_rect,
+                InteractionType::ParameterLinker(parameter_id),
+            )],
+            final_rect,
+        )
     }
 }
 
@@ -231,7 +274,12 @@ impl Node {
 
     /// Draw the ui and return the final footprint of the ui for
     /// further interaction tests
-    fn ui(&self, selected: Option<Selected>, ui: &mut Ui, transform: &ScreenTransform) -> Rect {
+    fn ui(
+        &self,
+        selected: Option<Selected>,
+        ui: &mut Ui,
+        transform: &ScreenTransform,
+    ) -> Vec<Interactable> {
         ui.set_clip_rect(*transform.frame());
 
         let color = ui.style().visuals.text_color();
@@ -250,8 +298,6 @@ impl Node {
         // parameters.
         let radius = ui.fonts().row_height(TextStyle::Body) * 0.3;
 
-        let mut output_shapes = Vec::new();
-
         // first the outputs, it is less common to have the number of
         // inputs to be larger than the number of outputs, so having
         // the lesser number parameters first makes it nicer.
@@ -261,49 +307,67 @@ impl Node {
 
         let mut outputs_param_size_x = None;
         let mut outputs_param_size_y = 0.0;
-        self.outputs.iter().for_each(|(_id, output)| {
-            let (mut new_shapes, rect) = output.ui(
-                ui,
-                pos + Vec2::new(0.0, outputs_param_size_y),
-                radius,
-                self.width,
-                false,
-            );
+        let (output_shapes, output_interactables): (Vec<_>, Vec<_>) = self
+            .outputs
+            .iter()
+            .map(|(parameter_id, output)| {
+                let (new_shapes, interactables, rect) = output.ui(
+                    self.id,
+                    *parameter_id,
+                    ui,
+                    pos + Vec2::new(0.0, outputs_param_size_y),
+                    radius,
+                    self.width,
+                    false,
+                );
 
-            outputs_param_size_x = if let Some(outputs_param_size_x) = outputs_param_size_x {
-                Some(rect.width().max(outputs_param_size_x))
-            } else {
-                Some(rect.width())
-            };
-            outputs_param_size_y += rect.height();
+                outputs_param_size_x = if let Some(outputs_param_size_x) = outputs_param_size_x {
+                    Some(rect.width().max(outputs_param_size_x))
+                } else {
+                    Some(rect.width())
+                };
+                outputs_param_size_y += rect.height();
 
-            output_shapes.append(&mut new_shapes);
-        });
+                (new_shapes, interactables)
+            })
+            .unzip();
+        let mut output_shapes: Vec<Shape> = output_shapes.into_iter().flatten().collect();
+        let mut output_interactables: Vec<Interactable> =
+            output_interactables.into_iter().flatten().collect();
+
         let outputs_param_size =
             Vec2::new(outputs_param_size_x.unwrap_or(0.0), outputs_param_size_y);
 
         let pos = pos + Vec2::new(0.0, outputs_param_size.y);
-        let mut input_shapes = Vec::new();
         let mut inputs_param_size_x = None;
         let mut inputs_param_size_y = 0.0;
-        self.inputs.iter().for_each(|(_id, input)| {
-            let (mut new_shapes, rect) = input.ui(
-                ui,
-                pos + Vec2::new(0.0, inputs_param_size_y),
-                radius,
-                self.width,
-                true,
-            );
+        let (input_shapes, input_interactables): (Vec<_>, Vec<_>) = self
+            .inputs
+            .iter()
+            .map(|(parameter_id, input)| {
+                let (new_shapes, interactables, rect) = input.ui(
+                    self.id,
+                    *parameter_id,
+                    ui,
+                    pos + Vec2::new(0.0, inputs_param_size_y),
+                    radius,
+                    self.width,
+                    true,
+                );
 
-            inputs_param_size_x = if let Some(inputs_param_size_x) = inputs_param_size_x {
-                Some(rect.width().max(inputs_param_size_x))
-            } else {
-                Some(rect.width())
-            };
-            inputs_param_size_y += rect.height();
+                inputs_param_size_x = if let Some(inputs_param_size_x) = inputs_param_size_x {
+                    Some(rect.width().max(inputs_param_size_x))
+                } else {
+                    Some(rect.width())
+                };
+                inputs_param_size_y += rect.height();
 
-            input_shapes.append(&mut new_shapes);
-        });
+                (new_shapes, interactables)
+            })
+            .unzip();
+        let input_shapes: Vec<Shape> = input_shapes.into_iter().flatten().collect();
+        let input_interactables: Vec<Interactable> =
+            input_interactables.into_iter().flatten().collect();
         let inputs_param_size = Vec2::new(inputs_param_size_x.unwrap_or(0.0), inputs_param_size_y);
 
         let background_width = inputs_param_size
@@ -324,10 +388,10 @@ impl Node {
             for shape in output_shapes.iter_mut() {
                 shape.translate(Vec2::new(background_width - self.width, 0.0));
             }
+            for interactable in output_interactables.iter_mut() {
+                interactable.translate(Vec2::new(background_width - self.width, 0.0));
+            }
         }
-
-        shapes.append(&mut output_shapes);
-        shapes.append(&mut input_shapes);
 
         let background_rect = Rect::from_min_size(
             initial_pos,
@@ -353,8 +417,33 @@ impl Node {
         let ui = ui.child_ui(background_rect, Layout::default());
 
         ui.painter().sub_region(*transform.frame()).extend(shapes);
+        ui.painter()
+            .sub_region(*transform.frame())
+            .extend(output_shapes);
+        ui.painter()
+            .sub_region(*transform.frame())
+            .extend(input_shapes);
 
-        background_rect
+        let mut interactables = vec![
+            Interactable::new(self.id, background_rect, InteractionType::Node),
+            Interactable::new(
+                self.id,
+                Rect::from_min_max(background_rect.left_top(), background_rect.left_bottom()),
+                InteractionType::NodeEdge,
+            ),
+            Interactable::new(
+                self.id,
+                Rect::from_min_max(background_rect.right_top(), background_rect.right_bottom()),
+                InteractionType::NodeEdge,
+            ),
+        ];
+
+        let mut output_interactables = output_interactables;
+        interactables.append(&mut output_interactables);
+        let mut input_interactables = input_interactables;
+        interactables.append(&mut input_interactables);
+
+        interactables
     }
 }
 
@@ -497,10 +586,10 @@ impl NodeGraph {
 
         ui.painter().sub_region(*transform.frame()).extend(shapes);
 
-        let node_rects: Vec<Rect> = self
+        let interactables: Vec<Interactable> = self
             .nodes
             .iter()
-            .map(|node| {
+            .flat_map(|node| {
                 node.ui(
                     selected_nodes
                         .iter()
@@ -518,70 +607,66 @@ impl NodeGraph {
             })
             .collect();
 
+        let mut selected_nodes = selected_nodes;
         if let Some(hover_pos) = response.hover_pos() {
             if response.clicked_by(PointerButton::Primary) {
-                let interact_radius_sq: f32 = (16.0f32).powi(2);
+                let node_interact_radius_sq: f32 = (16.0f32).powi(2);
+                let node_edge_interact_radius_sq: f32 = (16.0f32).powi(2);
+                let parameter_link_interact_radius_sq: f32 = (16.0f32).powi(2);
 
-                let selected_node = node_rects
+                let interactable = interactables
                     .iter()
-                    .enumerate()
-                    .map(|(i, rect)| {
-                        let dist_sq = rect.distance_sq_to_pos(hover_pos);
-                        (i, dist_sq)
+                    .map(|interactable| {
+                        let dist_sq = interactable.rect.distance_sq_to_pos(hover_pos);
+                        (interactable, dist_sq)
                     })
-                    .min_by_key(|(_, dist_sq)| dist_sq.ord())
-                    .and_then(|(index, dist_sq)| {
-                        if dist_sq <= interact_radius_sq {
-                            Some(index)
-                        } else {
-                            None
-                        }
-                    })
-                    .map(|index| self.nodes[index].id);
-
-                if ui.input().modifiers.is_none() {
-                    // select only one node, or deselect all nodes
-                    if let Some(selected_node) = selected_node {
-                        vec![selected_node]
-                    } else {
-                        Vec::new()
-                    }
-                } else if ui.input().modifiers.shift_only() {
-                    if let Some(selected_node) = selected_node {
-                        // add or remove from the selected nodes list
-                        let selected_node_index =
-                            selected_nodes.iter().enumerate().find_map(|(index, id)| {
-                                if *id == selected_node {
-                                    Some(index)
-                                } else {
-                                    None
-                                }
-                            });
-                        let mut selected_nodes = selected_nodes;
-                        if let Some(index) = selected_node_index {
-                            if index == selected_nodes.len() - 1 {
-                                selected_nodes.remove(index);
-                            } else {
-                                let selected_node = selected_nodes.remove(index);
-                                selected_nodes.push(selected_node);
+                    .filter(
+                        |(interactable, dist_sq)| match interactable.interaction_type {
+                            InteractionType::Node => *dist_sq <= node_interact_radius_sq,
+                            InteractionType::NodeEdge => *dist_sq <= node_edge_interact_radius_sq,
+                            InteractionType::ParameterLinker(_) => {
+                                *dist_sq <= parameter_link_interact_radius_sq
                             }
-                        } else {
-                            selected_nodes.push(selected_node);
+                        },
+                    )
+                    .min_by_key(|(_, dist_sq)| dist_sq.ord())
+                    .map(|(interactable, _)| interactable);
+
+                if let Some(interactable) = interactable {
+                    if matches!(interactable.interaction_type, InteractionType::Node) {
+                        if ui.input().modifiers.is_none() {
+                            // select only that node
+                            selected_nodes = vec![interactable.node_id];
+                        } else if ui.input().modifiers.shift_only() {
+                            // add or remove from the selected nodes list
+                            let selected_node_index =
+                                selected_nodes.iter().enumerate().find_map(|(index, id)| {
+                                    if *id == interactable.node_id {
+                                        Some(index)
+                                    } else {
+                                        None
+                                    }
+                                });
+
+                            if let Some(index) = selected_node_index {
+                                if index == selected_nodes.len() - 1 {
+                                    selected_nodes.remove(index);
+                                } else {
+                                    let selected_node = selected_nodes.remove(index);
+                                    selected_nodes.push(selected_node);
+                                }
+                            } else {
+                                selected_nodes.push(interactable.node_id);
+                            }
                         }
-                        selected_nodes
-                    } else {
-                        // do not change selected nodes list
-                        selected_nodes
                     }
-                } else {
-                    selected_nodes
+                } else if ui.input().modifiers.is_none() {
+                    // deselect all nodes
+                    selected_nodes.clear();
                 }
-            } else {
-                selected_nodes
             }
-        } else {
-            selected_nodes
         }
+        selected_nodes
     }
 
     pub fn show<R>(
