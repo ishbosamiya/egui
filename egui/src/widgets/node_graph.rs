@@ -162,6 +162,11 @@ impl Parameter {
     }
 }
 
+enum Selected {
+    MostRecent,
+    NotMostRecent,
+}
+
 pub struct Node {
     /// Id of the node, used to create unique Id(s) for the inputs and
     /// outputs
@@ -226,7 +231,7 @@ impl Node {
 
     /// Draw the ui and return the final footprint of the ui for
     /// further interaction tests
-    fn ui(&self, selected: bool, ui: &mut Ui, transform: &ScreenTransform) -> Rect {
+    fn ui(&self, selected: Option<Selected>, ui: &mut Ui, transform: &ScreenTransform) -> Rect {
         ui.set_clip_rect(*transform.frame());
 
         let color = ui.style().visuals.text_color();
@@ -325,12 +330,18 @@ impl Node {
             ),
         );
 
+        if let Some(selected) = selected {
+            let stroke = match selected {
+                Selected::MostRecent => ui.visuals().selection.stroke,
+                Selected::NotMostRecent => Stroke::new(
+                    ui.visuals().selection.stroke.width,
+                    Color32::from_rgb(188, 67, 6),
+                ),
+            };
+            ui.painter().rect_stroke(background_rect, 2.0, stroke);
+        }
         ui.painter()
             .rect_filled(background_rect, 2.0, ui.style().visuals.faint_bg_color);
-        if selected {
-            ui.painter()
-                .rect_stroke(background_rect, 2.0, ui.visuals().selection.stroke);
-        }
 
         let ui = ui.child_ui(background_rect, Layout::default());
 
@@ -362,6 +373,8 @@ struct NodeGraphMemory {
     min_auto_bounds: PlotBounds,
     last_screen_transform: ScreenTransform,
     node_data: IdMap<NodeMemory>,
+    /// List of nodes that are currently selected, with selection
+    /// order going from left to right as least recent to most recent.
     selected_nodes: Vec<Id>,
 }
 
@@ -471,7 +484,7 @@ impl NodeGraph {
 
         if self.show_axis {
             for d in 0..2 {
-                crate::paint_axis(ui, d, transform, false, &mut shapes);
+                crate::paint_axis(ui, d, transform, true, &mut shapes);
             }
         }
 
@@ -484,7 +497,14 @@ impl NodeGraph {
                 node.ui(
                     selected_nodes
                         .iter()
-                        .any(|selected_node| *selected_node == node.id),
+                        .find(|selected_node| **selected_node == node.id)
+                        .map(|selected_node| {
+                            if selected_node == selected_nodes.last().unwrap() {
+                                Selected::MostRecent
+                            } else {
+                                Selected::NotMostRecent
+                            }
+                        }),
                     &mut ui.child_ui(*transform.frame(), Layout::default()),
                     transform,
                 )
@@ -532,7 +552,12 @@ impl NodeGraph {
                             });
                         let mut selected_nodes = selected_nodes;
                         if let Some(index) = selected_node_index {
-                            selected_nodes.swap_remove(index);
+                            if index == selected_nodes.len() - 1 {
+                                selected_nodes.remove(index);
+                            } else {
+                                let selected_node = selected_nodes.remove(index);
+                                selected_nodes.push(selected_node);
+                            }
                         } else {
                             selected_nodes.push(selected_node);
                         }
