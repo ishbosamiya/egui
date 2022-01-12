@@ -93,20 +93,44 @@ impl Parameter {
 
     /// Create the UI but do not paint it, add the shapes the must be
     /// painted to shapes
-    fn ui(&self, ui: &mut Ui, pos: Pos2) -> (Vec<Shape>, Rect) {
+    fn ui(
+        &self,
+        ui: &Ui,
+        pos: Pos2,
+        radius: f32,
+        max_width: f32,
+        is_input: bool,
+    ) -> (Vec<Shape>, Rect) {
         // TODO: need to scale the parameter based on the transform
 
         let text_style = TextStyle::Body;
-        let galley = ui.fonts().layout_no_wrap(
+        let galley = ui.fonts().layout(
             self.name.text().to_string(),
             text_style,
             ui.style().visuals.text_color(),
+            // hack: only half of the shape is
+            // considered, see shape_rect hack for more information
+            max_width - radius,
         );
 
-        let radius = galley.size().y * 0.4;
+        let align = if is_input {
+            Align2::LEFT_TOP
+        } else {
+            Align2::RIGHT_TOP
+        };
 
-        let text_pos = pos + Vec2::new(2.0 * radius, 0.0);
-        let text_rect = Align2::LEFT_TOP.anchor_rect(Rect::from_min_size(text_pos, galley.size()));
+        let pos = if is_input {
+            pos
+        } else {
+            pos + Vec2::new(max_width, 0.0)
+        };
+
+        let text_pos = if is_input {
+            pos + Vec2::new(2.0 * radius, 0.0)
+        } else {
+            pos - Vec2::new(2.0 * radius, 0.0)
+        };
+        let text_rect = align.anchor_rect(Rect::from_min_size(text_pos, galley.size()));
 
         let center = pos + Vec2::new(0.0, text_rect.height() * 0.5);
 
@@ -149,6 +173,8 @@ pub struct Node {
 
     /// Position of top left of the node in the node graph
     position: Pos2,
+    /// Width of the node
+    width: f32,
 }
 
 impl Node {
@@ -160,6 +186,7 @@ impl Node {
             inputs: Vec::new(),
             outputs: Vec::new(),
             position,
+            width: 100.0,
         }
     }
 
@@ -192,6 +219,11 @@ impl Node {
             .fold(self, |acc, parameter| acc.output(parameter))
     }
 
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
     /// Draw the ui and return the final footprint of the ui for
     /// further interaction tests
     fn ui(&self, selected: bool, ui: &mut Ui, transform: &ScreenTransform) -> Rect {
@@ -204,32 +236,27 @@ impl Node {
 
         let initial_pos = transform.transformed_pos(&self.position);
         let pos = initial_pos + Vec2::new(0.0, heading_galley.size().y);
+        let radius = 0.02 * transform.dpos_dvalue_x() as f32;
 
-        let mut shapes = Vec::new();
+        let mut output_shapes = Vec::new();
 
-        let mut inputs_param_size_x = None;
-        let mut inputs_param_size_y = 0.0;
-        self.inputs.iter().for_each(|(_id, input)| {
-            let (mut new_shapes, rect) = input.ui(ui, pos + Vec2::new(0.0, inputs_param_size_y));
-
-            inputs_param_size_x = if let Some(inputs_param_size_x) = inputs_param_size_x {
-                Some(rect.width().max(inputs_param_size_x))
-            } else {
-                Some(rect.width())
-            };
-            inputs_param_size_y += rect.height();
-
-            shapes.append(&mut new_shapes);
-        });
-        let inputs_param_size = Vec2::new(inputs_param_size_x.unwrap_or(0.0), inputs_param_size_y);
-
-        let gap = 25.0;
-        let pos = pos + Vec2::new(inputs_param_size.x + gap, 0.0);
+        // first the outputs, it is less common to have the number of
+        // inputs to be larger than the number of outputs, so having
+        // the lesser number parameters first makes it nicer.
+        //
+        // TODO: need to make this generic, pick whichever has lesser
+        // number of parameters
 
         let mut outputs_param_size_x = None;
         let mut outputs_param_size_y = 0.0;
         self.outputs.iter().for_each(|(_id, output)| {
-            let (mut new_shapes, rect) = output.ui(ui, pos + Vec2::new(0.0, outputs_param_size_y));
+            let (mut new_shapes, rect) = output.ui(
+                ui,
+                pos + Vec2::new(0.0, outputs_param_size_y),
+                radius,
+                self.width,
+                false,
+            );
 
             outputs_param_size_x = if let Some(outputs_param_size_x) = outputs_param_size_x {
                 Some(rect.width().max(outputs_param_size_x))
@@ -238,26 +265,63 @@ impl Node {
             };
             outputs_param_size_y += rect.height();
 
-            shapes.append(&mut new_shapes);
+            output_shapes.append(&mut new_shapes);
         });
         let outputs_param_size =
             Vec2::new(outputs_param_size_x.unwrap_or(0.0), outputs_param_size_y);
 
+        let pos = pos + Vec2::new(0.0, outputs_param_size.y);
+        let mut input_shapes = Vec::new();
+        let mut inputs_param_size_x = None;
+        let mut inputs_param_size_y = 0.0;
+        self.inputs.iter().for_each(|(_id, input)| {
+            let (mut new_shapes, rect) = input.ui(
+                ui,
+                pos + Vec2::new(0.0, inputs_param_size_y),
+                radius,
+                self.width,
+                true,
+            );
+
+            inputs_param_size_x = if let Some(inputs_param_size_x) = inputs_param_size_x {
+                Some(rect.width().max(inputs_param_size_x))
+            } else {
+                Some(rect.width())
+            };
+            inputs_param_size_y += rect.height();
+
+            input_shapes.append(&mut new_shapes);
+        });
+        let inputs_param_size = Vec2::new(inputs_param_size_x.unwrap_or(0.0), inputs_param_size_y);
+
+        let background_width = inputs_param_size
+            .x
+            .max(outputs_param_size.x)
+            .max(self.width);
+
+        let mut shapes = Vec::new();
+
         let heading_rect = Align2::CENTER_TOP.anchor_rect(Rect::from_min_size(
-            initial_pos
-                + Vec2::new(
-                    (inputs_param_size.x + gap + outputs_param_size.x) * 0.5,
-                    0.0,
-                ),
+            initial_pos + Vec2::new(background_width * 0.5, 0.0),
             heading_galley.size(),
         ));
         shapes.push(Shape::galley(heading_rect.min, heading_galley));
 
+        // must translate all the output elements
+        if background_width > self.width {
+            for shape in output_shapes.iter_mut() {
+                shape.translate(Vec2::new(background_width - self.width, 0.0));
+            }
+        }
+
+        shapes.append(&mut output_shapes);
+        shapes.append(&mut input_shapes);
+
         let background_rect = Rect::from_min_size(
             initial_pos,
             Vec2::new(
-                inputs_param_size.x + gap + outputs_param_size.x,
-                inputs_param_size.y.max(outputs_param_size.y) + heading_rect.height(),
+                background_width,
+                inputs_param_size.y + outputs_param_size.y + heading_rect.height(),
             ),
         );
 
@@ -281,11 +345,12 @@ impl Node {
 #[derive(Clone)]
 struct NodeMemory {
     position: Pos2,
+    width: f32,
 }
 
 impl NodeMemory {
-    pub fn new(position: Pos2) -> Self {
-        Self { position }
+    pub fn new(position: Pos2, width: f32) -> Self {
+        Self { position, width }
     }
 }
 
@@ -539,7 +604,7 @@ impl NodeGraph {
                 node_data: self
                     .nodes
                     .iter()
-                    .map(|node| (node.id, NodeMemory::new(node.position)))
+                    .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                     .collect(),
                 selected_nodes: Vec::new(),
             });
@@ -640,7 +705,7 @@ impl NodeGraph {
             node_data: self
                 .nodes
                 .iter()
-                .map(|node| (node.id, NodeMemory::new(node.position)))
+                .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                 .collect(),
             selected_nodes,
         };
