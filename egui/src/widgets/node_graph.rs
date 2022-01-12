@@ -577,18 +577,13 @@ impl NodeGraph {
         self
     }
 
-    /// Setup the UI.
-    ///
-    /// Returns the Node(s) that must be selected for the next frame,
-    /// if no valid (wrt the node graph) interaction takes place, the
-    /// current selected node list is returned.
+    /// Draw the GUI and provide the list of interactables.
     fn ui(
         &self,
-        selected_nodes: Vec<Id>,
+        selected_nodes: &[Id],
         ui: &mut Ui,
-        response: &Response,
         transform: &ScreenTransform,
-    ) -> Vec<Id> {
+    ) -> Vec<Interactable> {
         let mut shapes = Vec::new();
 
         if self.show_axis {
@@ -599,8 +594,7 @@ impl NodeGraph {
 
         ui.painter().sub_region(*transform.frame()).extend(shapes);
 
-        let interactables: Vec<Interactable> = self
-            .nodes
+        self.nodes
             .iter()
             .flat_map(|node| {
                 node.ui(
@@ -618,8 +612,16 @@ impl NodeGraph {
                     transform,
                 )
             })
-            .collect();
+            .collect()
+    }
 
+    /// Interact with the UI and return the list of selected nodes
+    fn interact(
+        interactables: &[Interactable],
+        selected_nodes: Vec<Id>,
+        ui: &Ui,
+        response: &Response,
+    ) -> Vec<Id> {
         let mut selected_nodes = selected_nodes;
         if let Some(hover_pos) = response.hover_pos() {
             if response.clicked_by(PointerButton::Primary) {
@@ -724,7 +726,7 @@ impl NodeGraph {
         };
 
         // Allocate the space.
-        let (rect, mut response) = ui.allocate_exact_size(size, Sense::drag());
+        let (rect, mut response) = ui.allocate_exact_size(size, Sense::click_and_drag());
 
         // Load or initialize the memory.
         let node_graph_id = ui.make_persistent_id(self.id_source);
@@ -830,7 +832,9 @@ impl NodeGraph {
             transform
         };
 
-        let selected_nodes = self.ui(selected_nodes, ui, &response, &transform);
+        let interactables = self.ui(&selected_nodes, ui, &transform);
+
+        let selected_nodes = Self::interact(&interactables, selected_nodes, ui, &response);
 
         if !selected_nodes.is_empty()
             && response.dragged_by(PointerButton::Primary)
