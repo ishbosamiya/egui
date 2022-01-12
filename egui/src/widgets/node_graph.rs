@@ -3,7 +3,7 @@ use std::hash::Hash;
 use epaint::{
     emath::{Align2, NumExt},
     util::FloatOrd,
-    Pos2, Rect, Shape, TextStyle, Vec2,
+    CircleShape, Color32, Pos2, Rect, Shape, Stroke, TextStyle, Vec2,
 };
 
 use crate::{
@@ -12,13 +12,129 @@ use crate::{
     WidgetText,
 };
 
+#[derive(PartialEq)]
+pub enum ParameterShape {
+    Circle,
+    Diamond,
+    Square,
+    Cross,
+    Plus,
+}
+
+impl ParameterShape {
+    pub fn get_shape(
+        &self,
+        center: Pos2,
+        radius: f32,
+        fill: Color32,
+        stroke: Stroke,
+    ) -> Vec<Shape> {
+        let tf = |dx: f32, dy: f32| -> Pos2 { center + radius * Vec2::new(dx, dy) };
+        let frac_1_sqrt_2 = 1.0 / 2f32.sqrt();
+
+        match self {
+            ParameterShape::Circle => vec![Shape::Circle(CircleShape {
+                center,
+                radius,
+                fill,
+                stroke,
+            })],
+            ParameterShape::Diamond => {
+                let points = vec![tf(1.0, 0.0), tf(0.0, -1.0), tf(-1.0, 0.0), tf(0.0, 1.0)];
+                vec![Shape::convex_polygon(points, fill, stroke)]
+            }
+            ParameterShape::Square => {
+                let points = vec![
+                    tf(frac_1_sqrt_2, frac_1_sqrt_2),
+                    tf(frac_1_sqrt_2, -frac_1_sqrt_2),
+                    tf(-frac_1_sqrt_2, -frac_1_sqrt_2),
+                    tf(-frac_1_sqrt_2, frac_1_sqrt_2),
+                ];
+                vec![Shape::convex_polygon(points, fill, stroke)]
+            }
+            ParameterShape::Cross => {
+                let diagonal1 = [
+                    tf(-frac_1_sqrt_2, -frac_1_sqrt_2),
+                    tf(frac_1_sqrt_2, frac_1_sqrt_2),
+                ];
+                let diagonal2 = [
+                    tf(frac_1_sqrt_2, -frac_1_sqrt_2),
+                    tf(-frac_1_sqrt_2, frac_1_sqrt_2),
+                ];
+                vec![
+                    Shape::line_segment(diagonal1, stroke),
+                    Shape::line_segment(diagonal2, stroke),
+                ]
+            }
+            ParameterShape::Plus => {
+                let horizontal = [tf(-1.0, 0.0), tf(1.0, 0.0)];
+                let vertical = [tf(0.0, -1.0), tf(0.0, 1.0)];
+                vec![
+                    Shape::line_segment(horizontal, stroke),
+                    Shape::line_segment(vertical, stroke),
+                ]
+            }
+        }
+    }
+}
+
 pub struct Parameter {
     name: WidgetText,
+    shape: ParameterShape,
 }
 
 impl Parameter {
-    pub fn new(name: impl Into<WidgetText>) -> Self {
-        Self { name: name.into() }
+    pub fn new(name: impl Into<WidgetText>, shape: ParameterShape) -> Self {
+        Self {
+            name: name.into(),
+            shape,
+        }
+    }
+
+    /// Create the UI but do not paint it, add the shapes the must be
+    /// painted to shapes
+    fn ui(&self, ui: &mut Ui, pos: Pos2) -> (Vec<Shape>, Rect) {
+        // TODO: need to scale the parameter based on the transform
+
+        let text_style = TextStyle::Body;
+        let galley = ui.fonts().layout_no_wrap(
+            self.name.text().to_string(),
+            text_style,
+            ui.style().visuals.text_color(),
+        );
+
+        let radius = galley.size().y * 0.4;
+
+        let text_pos = pos + Vec2::new(2.0 * radius, 0.0);
+        let text_rect = Align2::LEFT_TOP.anchor_rect(Rect::from_min_size(text_pos, galley.size()));
+
+        let center = pos + Vec2::new(0.0, text_rect.height() * 0.5);
+
+        // hack: need the shape to be on the background rect, so shape
+        // rect does not actually cover the whole shape, only half of
+        // the shape.
+        let shape_rect = Rect::from_center_size(
+            center + Vec2::new(0.5 * radius, 0.0),
+            Vec2::new(radius, 2.0 * radius),
+        );
+
+        let mut shapes = self.shape.get_shape(
+            center,
+            radius,
+            Color32::TEMPORARY_COLOR,
+            match self.shape {
+                ParameterShape::Cross | ParameterShape::Plus => {
+                    Stroke::new(radius * 0.5, Color32::TEMPORARY_COLOR)
+                }
+                _ => Stroke::none(),
+            },
+        );
+
+        let final_rect = shape_rect.union(text_rect);
+
+        shapes.push(Shape::galley(text_rect.min, galley));
+
+        (shapes, final_rect)
     }
 }
 
@@ -94,24 +210,16 @@ impl Node {
         let mut inputs_param_size_x = None;
         let mut inputs_param_size_y = 0.0;
         self.inputs.iter().for_each(|(_id, input)| {
-            let text_style = TextStyle::Body;
-            let row_height = ui.fonts().row_height(text_style);
-            let galley =
-                ui.fonts()
-                    .layout_no_wrap(input.name.text().to_string(), text_style, color);
-            let rect = Align2::LEFT_TOP.anchor_rect(Rect::from_min_size(
-                pos + Vec2::new(0.0, inputs_param_size_y),
-                galley.size(),
-            ));
+            let (mut new_shapes, rect) = input.ui(ui, pos + Vec2::new(0.0, inputs_param_size_y));
 
             inputs_param_size_x = if let Some(inputs_param_size_x) = inputs_param_size_x {
-                Some(galley.size().x.max(inputs_param_size_x))
+                Some(rect.width().max(inputs_param_size_x))
             } else {
-                Some(galley.size().x)
+                Some(rect.width())
             };
-            inputs_param_size_y += row_height;
+            inputs_param_size_y += rect.height();
 
-            shapes.push(Shape::galley(rect.min, galley));
+            shapes.append(&mut new_shapes);
         });
         let inputs_param_size = Vec2::new(inputs_param_size_x.unwrap_or(0.0), inputs_param_size_y);
 
@@ -121,24 +229,16 @@ impl Node {
         let mut outputs_param_size_x = None;
         let mut outputs_param_size_y = 0.0;
         self.outputs.iter().for_each(|(_id, output)| {
-            let text_style = epaint::TextStyle::Body;
-            let row_height = ui.fonts().row_height(text_style);
-            let galley =
-                ui.fonts()
-                    .layout_no_wrap(output.name.text().to_string(), text_style, color);
-            let rect = Align2::LEFT_TOP.anchor_rect(Rect::from_min_size(
-                pos + Vec2::new(0.0, outputs_param_size_y),
-                galley.size(),
-            ));
+            let (mut new_shapes, rect) = output.ui(ui, pos + Vec2::new(0.0, outputs_param_size_y));
 
             outputs_param_size_x = if let Some(outputs_param_size_x) = outputs_param_size_x {
-                Some(galley.size().x.max(outputs_param_size_x))
+                Some(rect.width().max(outputs_param_size_x))
             } else {
-                Some(galley.size().x)
+                Some(rect.width())
             };
-            outputs_param_size_y += row_height;
+            outputs_param_size_y += rect.height();
 
-            shapes.push(Shape::galley(rect.min, galley));
+            shapes.append(&mut new_shapes);
         });
         let outputs_param_size =
             Vec2::new(outputs_param_size_x.unwrap_or(0.0), outputs_param_size_y);
@@ -164,11 +264,8 @@ impl Node {
         ui.painter()
             .rect_filled(background_rect, 2.0, ui.style().visuals.faint_bg_color);
         if selected {
-            ui.painter().rect_stroke(
-                background_rect.expand(ui.spacing().button_padding.x),
-                2.0,
-                ui.visuals().selection.stroke,
-            );
+            ui.painter()
+                .rect_stroke(background_rect, 2.0, ui.visuals().selection.stroke);
         }
 
         let ui = ui.child_ui(background_rect, Layout::default());
