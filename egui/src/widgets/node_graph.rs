@@ -241,7 +241,14 @@ impl Node {
 
         let initial_pos = transform.transformed_pos(&self.position);
         let pos = initial_pos + Vec2::new(0.0, heading_galley.size().y);
-        let radius = 0.02 * transform.dpos_dvalue_x() as f32;
+        // TODO: make the radius scale with the transform using `let
+        // radius = 0.02 * transform.dpos_dvalue_x() as f32;`, for
+        // now, since the text does not scale with the transform, not
+        // scaling the other shapes either
+        //
+        // hack: Assuming that only TextStyle::Body is used for the
+        // parameters.
+        let radius = ui.fonts().row_height(TextStyle::Body) * 0.3;
 
         let mut output_shapes = Vec::new();
 
