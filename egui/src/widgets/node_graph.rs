@@ -276,6 +276,19 @@ impl Node {
     }
 }
 
+/// Information about the node that has to persist between frames.
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[derive(Clone)]
+struct NodeMemory {
+    position: Pos2,
+}
+
+impl NodeMemory {
+    pub fn new(position: Pos2) -> Self {
+        Self { position }
+    }
+}
+
 /// Information about the node graph that has to persist between frames.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Clone)]
@@ -283,7 +296,7 @@ struct NodeGraphMemory {
     auto_bounds: bool,
     min_auto_bounds: PlotBounds,
     last_screen_transform: ScreenTransform,
-    node_positions: IdMap<Pos2>,
+    node_data: IdMap<NodeMemory>,
     selected_nodes: Vec<Id>,
 }
 
@@ -523,10 +536,10 @@ impl NodeGraph {
                     center_x_axis,
                     center_y_axis,
                 ),
-                node_positions: self
+                node_data: self
                     .nodes
                     .iter()
-                    .map(|node| (node.id, node.position))
+                    .map(|node| (node.id, NodeMemory::new(node.position)))
                     .collect(),
                 selected_nodes: Vec::new(),
             });
@@ -545,14 +558,14 @@ impl NodeGraph {
             mut auto_bounds,
             last_screen_transform,
             selected_nodes,
-            node_positions,
+            node_data,
             ..
         } = memory;
 
         // force nodes to their respective positions
         self.nodes.iter_mut().for_each(|node| {
-            if let Some(position) = node_positions.get(&node.id) {
-                node.position = *position;
+            if let Some(data) = node_data.get(&node.id) {
+                node.position = data.position;
             }
         });
 
@@ -624,10 +637,10 @@ impl NodeGraph {
             auto_bounds,
             min_auto_bounds: self.min_auto_bounds,
             last_screen_transform: transform,
-            node_positions: self
+            node_data: self
                 .nodes
                 .iter()
-                .map(|node| (node.id, node.position))
+                .map(|node| (node.id, NodeMemory::new(node.position)))
                 .collect(),
             selected_nodes,
         };
