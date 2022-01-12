@@ -652,6 +652,21 @@ impl NodeGraph {
             ..
         } = memory;
 
+        // reorder nodes based selection history
+        self.nodes.sort_by_key(|node| {
+            selected_nodes
+                .iter()
+                .enumerate()
+                .find_map(|(index, id)| {
+                    if *id == node.id {
+                        Some(selected_nodes.len() + index + 1)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(selected_nodes.len())
+        });
+
         // force nodes to their respective positions
         self.nodes.iter_mut().for_each(|node| {
             if let Some(data) = node_data.get(&node.id) {
