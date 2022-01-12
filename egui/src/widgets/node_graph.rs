@@ -18,6 +18,19 @@ enum InteractionType {
     ParameterLinker(Id),
 }
 
+impl InteractionType {
+    /// Get layer order of the interaction type, 0 is lowest in the
+    /// layer stack
+    #[inline]
+    pub fn get_layer_order(&self) -> usize {
+        match self {
+            InteractionType::Node => 0,
+            InteractionType::NodeEdge => 1,
+            InteractionType::ParameterLinker(_) => 2,
+        }
+    }
+}
+
 struct Interactable {
     /// Id of the [`Node`] for which interaction may take place
     node_id: Id,
@@ -611,8 +624,8 @@ impl NodeGraph {
         if let Some(hover_pos) = response.hover_pos() {
             if response.clicked_by(PointerButton::Primary) {
                 let node_interact_radius_sq: f32 = (16.0f32).powi(2);
-                let node_edge_interact_radius_sq: f32 = (16.0f32).powi(2);
-                let parameter_link_interact_radius_sq: f32 = (16.0f32).powi(2);
+                let node_edge_interact_radius_sq: f32 = (4.0f32).powi(2);
+                let parameter_link_interact_radius_sq: f32 = (4.0f32).powi(2);
 
                 let interactable = interactables
                     .iter()
@@ -629,7 +642,14 @@ impl NodeGraph {
                             }
                         },
                     )
-                    .min_by_key(|(_, dist_sq)| dist_sq.ord())
+                    .min_by(|(interactable1, dist_sq1), (interactable2, dist_sq2)| {
+                        interactable1
+                            .interaction_type
+                            .get_layer_order()
+                            .cmp(&interactable2.interaction_type.get_layer_order())
+                            .reverse()
+                            .then(dist_sq1.ord().cmp(&dist_sq2.ord()))
+                    })
                     .map(|(interactable, _)| interactable);
 
                 if let Some(interactable) = interactable {
