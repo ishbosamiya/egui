@@ -187,7 +187,7 @@ struct NodeGraphMemory {
     min_auto_bounds: PlotBounds,
     last_screen_transform: ScreenTransform,
     node_positions: IdMap<Pos2>,
-    selected_node: Option<Id>,
+    selected_nodes: Vec<Id>,
 }
 
 impl NodeGraphMemory {
@@ -282,16 +282,16 @@ impl NodeGraph {
 
     /// Setup the UI.
     ///
-    /// Returns the Node that must be selected for the next frame, if
-    /// no valid (wrt the node graph) interaction takes place, the
-    /// current selected node is returned.
+    /// Returns the Node(s) that must be selected for the next frame,
+    /// if no valid (wrt the node graph) interaction takes place, the
+    /// current selected node list is returned.
     fn ui(
         &self,
-        selected_node: Option<Id>,
+        selected_nodes: Vec<Id>,
         ui: &mut Ui,
         response: &Response,
         transform: &ScreenTransform,
-    ) -> Option<Id> {
+    ) -> Vec<Id> {
         let mut shapes = Vec::new();
 
         if self.show_axis {
@@ -307,10 +307,9 @@ impl NodeGraph {
             .iter()
             .map(|node| {
                 node.ui(
-                    match selected_node {
-                        Some(selected_node) => selected_node == node.id,
-                        None => false,
-                    },
+                    selected_nodes
+                        .iter()
+                        .any(|selected_node| *selected_node == node.id),
                     &mut ui.child_ui(*transform.frame(), Layout::default()),
                     transform,
                 )
@@ -321,7 +320,7 @@ impl NodeGraph {
             if response.clicked_by(PointerButton::Primary) {
                 let interact_radius_sq: f32 = (16.0f32).powi(2);
 
-                node_rects
+                let selected_node = node_rects
                     .iter()
                     .enumerate()
                     .map(|(i, rect)| {
@@ -336,12 +335,45 @@ impl NodeGraph {
                             None
                         }
                     })
-                    .map(|index| self.nodes[index].id)
+                    .map(|index| self.nodes[index].id);
+
+                if ui.input().modifiers.is_none() {
+                    // select only one node, or deselect all nodes
+                    if let Some(selected_node) = selected_node {
+                        vec![selected_node]
+                    } else {
+                        Vec::new()
+                    }
+                } else if ui.input().modifiers.shift_only() {
+                    if let Some(selected_node) = selected_node {
+                        // add or remove from the selected nodes list
+                        let selected_node_index =
+                            selected_nodes.iter().enumerate().find_map(|(index, id)| {
+                                if *id == selected_node {
+                                    Some(index)
+                                } else {
+                                    None
+                                }
+                            });
+                        let mut selected_nodes = selected_nodes;
+                        if let Some(index) = selected_node_index {
+                            selected_nodes.swap_remove(index);
+                        } else {
+                            selected_nodes.push(selected_node);
+                        }
+                        selected_nodes
+                    } else {
+                        // do not change selected nodes list
+                        selected_nodes
+                    }
+                } else {
+                    selected_nodes
+                }
             } else {
-                selected_node
+                selected_nodes
             }
         } else {
-            selected_node
+            selected_nodes
         }
     }
 
@@ -399,7 +431,7 @@ impl NodeGraph {
                     .iter()
                     .map(|node| (node.id, node.position))
                     .collect(),
-                selected_node: None,
+                selected_nodes: Vec::new(),
             });
 
         // If the min bounds changed, recalculate everything.
@@ -415,7 +447,7 @@ impl NodeGraph {
         let NodeGraphMemory {
             mut auto_bounds,
             last_screen_transform,
-            selected_node,
+            selected_nodes,
             node_positions,
             ..
         } = memory;
@@ -471,11 +503,14 @@ impl NodeGraph {
             transform
         };
 
-        let selected_node = self.ui(selected_node, ui, &response, &transform);
+        let selected_nodes = self.ui(selected_nodes, ui, &response, &transform);
 
-        if let Some(selected_node) = selected_node {
-            if response.dragged_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
-                if let Some(node) = self.nodes.iter_mut().find(|node| node.id == selected_node) {
+        if !selected_nodes.is_empty()
+            && response.dragged_by(PointerButton::Primary)
+            && ui.input().modifiers.is_none()
+        {
+            for selected_node in selected_nodes.iter() {
+                if let Some(node) = self.nodes.iter_mut().find(|node| node.id == *selected_node) {
                     node.position += Vec2::new(
                         response.drag_delta().x * transform.dvalue_dpos()[0] as f32,
                         response.drag_delta().y * transform.dvalue_dpos()[1] as f32,
@@ -497,7 +532,7 @@ impl NodeGraph {
                 .iter()
                 .map(|node| (node.id, node.position))
                 .collect(),
-            selected_node,
+            selected_nodes,
         };
         memory.store(ui.ctx(), node_graph_id);
 
