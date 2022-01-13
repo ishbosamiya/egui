@@ -218,6 +218,24 @@ impl Parameter {
     }
 }
 
+pub struct Link {
+    node_id1: Id,
+    node_id2: Id,
+    parameter_id1: Id,
+    parameter_id2: Id,
+}
+
+impl Link {
+    pub fn new(node_id1: Id, node_id2: Id, parameter_id1: Id, parameter_id2: Id) -> Self {
+        Self {
+            node_id1,
+            node_id2,
+            parameter_id1,
+            parameter_id2,
+        }
+    }
+}
+
 enum Selected {
     MostRecent,
     NotMostRecent,
@@ -576,6 +594,7 @@ impl NodeGraph {
     fn ui(
         &self,
         selected_nodes: &[Id],
+        links: &[Link],
         ui: &mut Ui,
         transform: &ScreenTransform,
     ) -> Vec<Interactable> {
@@ -589,7 +608,8 @@ impl NodeGraph {
 
         ui.painter().sub_region(*transform.frame()).extend(shapes);
 
-        self.nodes
+        let interactables: Vec<_> = self
+            .nodes
             .iter()
             .flat_map(|node| {
                 node.ui(
@@ -607,7 +627,37 @@ impl NodeGraph {
                     transform,
                 )
             })
-            .collect()
+            .collect();
+
+        for link in links.iter() {
+            let parameter1_interactable = interactables
+                .iter()
+                .find(|interactable| match interactable.interaction_type {
+                    InteractionType::ParameterLinker(id) => {
+                        id == link.parameter_id1 && interactable.node_id == link.node_id1
+                    }
+                    _ => false,
+                })
+                .expect("Link has parameter id that doesn't exist");
+
+            let parameter2_interactable = interactables
+                .iter()
+                .find(|interactable| match interactable.interaction_type {
+                    InteractionType::ParameterLinker(id) => {
+                        id == link.parameter_id2 && interactable.node_id == link.node_id2
+                    }
+                    _ => false,
+                })
+                .expect("Link has parameter id that doesn't exist");
+
+            let p1 = parameter1_interactable.rect.center();
+            let p2 = parameter2_interactable.rect.center();
+
+            ui.painter()
+                .line_segment([p1, p2], Stroke::new(3.0, Color32::TEMPORARY_COLOR));
+        }
+
+        interactables
     }
 
     /// Interact with the UI and return the list of selected nodes and
@@ -702,8 +752,9 @@ impl NodeGraph {
     pub fn show<R>(
         mut self,
         ui: &mut Ui,
+        links: &[Link],
         add_contents: impl FnOnce(&mut Ui) -> R,
-    ) -> InnerResponse<R> {
+    ) -> InnerResponse<(Option<Link>, R)> {
         let center_x_axis = false;
         let center_y_axis = false;
 
@@ -823,7 +874,7 @@ impl NodeGraph {
             transform
         };
 
-        let interactables = self.ui(&selected_nodes, ui, &transform);
+        let interactables = self.ui(&selected_nodes, links, ui, &transform);
 
         let (selected_nodes, parameter_link_dragged) = Self::interact(
             &interactables,
@@ -867,6 +918,9 @@ impl NodeGraph {
         };
         memory.store(ui.ctx(), node_graph_id);
 
-        InnerResponse { inner, response }
+        InnerResponse {
+            inner: (None, inner),
+            response,
+        }
     }
 }
