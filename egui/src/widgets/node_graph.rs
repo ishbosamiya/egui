@@ -587,6 +587,7 @@ impl NodeGraph {
     fn ui(
         &self,
         selected_nodes: &[Id],
+        parameter_link_dragged: Option<(Id, Id)>,
         links: &[Link],
         ui: &mut Ui,
         transform: &ScreenTransform,
@@ -625,26 +626,25 @@ impl NodeGraph {
             .unzip();
         let interactables: Vec<_> = interactables.into_iter().flatten().collect();
 
-        let link_shapes = links.iter().map(|link| {
-            let parameter1_interactable = interactables
+        let get_parameter_interactable = |node_id: Id, parameter_id: Id| {
+            interactables
                 .iter()
                 .find(|interactable| match interactable.interaction_type {
                     InteractionType::ParameterLinker(id) => {
-                        id == link.parameter_id1 && interactable.node_id == link.node_id1
+                        id == parameter_id && interactable.node_id == node_id
                     }
                     _ => false,
                 })
-                .expect("Link has parameter id that doesn't exist");
+        };
 
-            let parameter2_interactable = interactables
-                .iter()
-                .find(|interactable| match interactable.interaction_type {
-                    InteractionType::ParameterLinker(id) => {
-                        id == link.parameter_id2 && interactable.node_id == link.node_id2
-                    }
-                    _ => false,
-                })
-                .expect("Link has parameter id that doesn't exist");
+        let link_shapes = links.iter().map(|link| {
+            let parameter1_interactable =
+                get_parameter_interactable(link.node_id1, link.parameter_id1)
+                    .expect("Link has parameter id that doesn't exist");
+
+            let parameter2_interactable =
+                get_parameter_interactable(link.node_id2, link.parameter_id2)
+                    .expect("Link has parameter id that doesn't exist");
 
             let p1 = parameter1_interactable.rect.center();
             let p2 = parameter2_interactable.rect.center();
@@ -652,9 +652,29 @@ impl NodeGraph {
             Shape::line_segment([p1, p2], Stroke::new(3.0, Color32::TEMPORARY_COLOR))
         });
 
+        let mut ongoing_link_shape = None;
+        if let Some((start_node, start_parameter)) = parameter_link_dragged {
+            if let Some(hover_pos) = ui.input().pointer.hover_pos() {
+                let p1 = get_parameter_interactable(start_node, start_parameter)
+                    .expect("Parameter link start has id that doesn't exist")
+                    .rect
+                    .center();
+
+                let p2 = hover_pos;
+
+                ongoing_link_shape = Some(Shape::line_segment(
+                    [p1, p2],
+                    Stroke::new(3.0, Color32::TEMPORARY_COLOR),
+                ));
+            }
+        }
+
         let mut shapes = Vec::new();
 
         shapes.extend(link_shapes);
+        if let Some(ongoing_link_shape) = ongoing_link_shape {
+            shapes.push(ongoing_link_shape);
+        }
         shapes.extend(node_shapes.into_iter().flatten());
 
         ui.painter().extend(shapes);
@@ -884,7 +904,13 @@ impl NodeGraph {
             transform
         };
 
-        let interactables = self.ui(&selected_nodes, links, ui, &transform);
+        let interactables = self.ui(
+            &selected_nodes,
+            parameter_link_dragged,
+            links,
+            ui,
+            &transform,
+        );
 
         let (selected_nodes, parameter_link_dragged, new_link) = Self::interact(
             &interactables,
