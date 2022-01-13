@@ -662,17 +662,20 @@ impl NodeGraph {
         interactables
     }
 
-    /// Interact with the UI and return the list of selected nodes and
-    /// the parameter link dragged
+    // TODO: refactor this code to make more sense, returning so many
+    // elements together gets confusing
+    /// Interact with the UI and return the list of selected nodes,
+    /// the parameter link dragged and new link if created
     fn interact(
         interactables: &[Interactable],
         selected_nodes: Vec<Id>,
         parameter_link_dragged: Option<(Id, Id)>,
         ui: &Ui,
         response: &Response,
-    ) -> (Vec<Id>, Option<(Id, Id)>) {
+    ) -> (Vec<Id>, Option<(Id, Id)>, Option<Link>) {
         let mut selected_nodes = selected_nodes;
         let mut parameter_link_dragged = parameter_link_dragged;
+        let mut new_link = None;
         if let Some(hover_pos) = response.hover_pos() {
             if response.clicked_by(PointerButton::Primary) {
                 let node_interact_radius_sq: f32 = (16.0f32).powi(2);
@@ -736,7 +739,12 @@ impl NodeGraph {
                         interactable.interaction_type
                     {
                         if let Some((start_node, start_parameter)) = parameter_link_dragged {
-                            // TODO: need to actually link the things
+                            new_link = Some(Link::new(
+                                start_node,
+                                interactable.node_id,
+                                start_parameter,
+                                parameter_id,
+                            ));
                             parameter_link_dragged = None;
                         } else {
                             parameter_link_dragged = Some((interactable.node_id, parameter_id));
@@ -748,7 +756,7 @@ impl NodeGraph {
                 }
             }
         }
-        (selected_nodes, parameter_link_dragged)
+        (selected_nodes, parameter_link_dragged, new_link)
     }
 
     pub fn show<R>(
@@ -756,7 +764,7 @@ impl NodeGraph {
         ui: &mut Ui,
         links: &[Link],
         add_contents: impl FnOnce(&mut Ui) -> R,
-    ) -> InnerResponse<(Option<Link>, R)> {
+    ) -> (Option<Link>, InnerResponse<R>) {
         let center_x_axis = false;
         let center_y_axis = false;
 
@@ -878,17 +886,13 @@ impl NodeGraph {
 
         let interactables = self.ui(&selected_nodes, links, ui, &transform);
 
-        let (selected_nodes, parameter_link_dragged) = Self::interact(
+        let (selected_nodes, parameter_link_dragged, new_link) = Self::interact(
             &interactables,
             selected_nodes,
             parameter_link_dragged,
             ui,
             &response,
         );
-
-        if let Some(parameter_link_dragged) = parameter_link_dragged {
-            dbg!(parameter_link_dragged);
-        }
 
         if !selected_nodes.is_empty()
             && response.dragged_by(PointerButton::Primary)
@@ -920,9 +924,6 @@ impl NodeGraph {
         };
         memory.store(ui.ctx(), node_graph_id);
 
-        InnerResponse {
-            inner: (None, inner),
-            response,
-        }
+        (new_link, InnerResponse { inner, response })
     }
 }
