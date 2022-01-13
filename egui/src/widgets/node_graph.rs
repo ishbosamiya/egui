@@ -8,7 +8,7 @@ use epaint::{
 
 use crate::{
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, IdMap, InnerResponse, Key, Layout, PointerButton, Response, Sense, Ui,
+    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Response, Sense, Ui,
     WidgetText,
 };
 
@@ -478,8 +478,6 @@ impl NodeMemory {
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Clone)]
 struct NodeGraphMemory {
-    auto_bounds: bool,
-    min_auto_bounds: PlotBounds,
     last_screen_transform: ScreenTransform,
     node_data: IdMap<NodeMemory>,
     /// List of nodes that are currently selected, with selection
@@ -504,8 +502,6 @@ pub struct NodeGraph {
     /// Show axis to provide sense of scale. Default true.
     show_axis: bool,
 
-    min_auto_bounds: PlotBounds,
-
     min_size: Vec2,
     /// Width of the node graph
     width: Option<f32>,
@@ -523,8 +519,6 @@ impl NodeGraph {
             id_source: Id::new(id_source),
 
             show_axis: true,
-
-            min_auto_bounds: PlotBounds::NOTHING,
 
             min_size: Vec2::splat(64.0),
             width: None,
@@ -730,16 +724,19 @@ impl NodeGraph {
 
         // Load or initialize the memory.
         let node_graph_id = ui.make_persistent_id(self.id_source);
-        let mut memory =
+        let memory =
             NodeGraphMemory::load(ui.ctx(), node_graph_id).unwrap_or_else(|| NodeGraphMemory {
-                auto_bounds: !self.min_auto_bounds.is_valid(),
-                min_auto_bounds: self.min_auto_bounds,
-                last_screen_transform: ScreenTransform::new(
-                    rect,
-                    self.min_auto_bounds,
-                    center_x_axis,
-                    center_y_axis,
-                ),
+                last_screen_transform: {
+                    let mut transform = ScreenTransform::new(
+                        rect,
+                        PlotBounds::NOTHING,
+                        center_x_axis,
+                        center_y_axis,
+                    );
+                    // force the aspect ratio to be 1
+                    transform.set_aspect(1.0);
+                    transform
+                },
                 node_data: self
                     .nodes
                     .iter()
@@ -748,22 +745,10 @@ impl NodeGraph {
                 selected_nodes: Vec::new(),
             });
 
-        // If the min bounds changed, recalculate everything.
-        if self.min_auto_bounds != memory.min_auto_bounds {
-            memory = NodeGraphMemory {
-                auto_bounds: !self.min_auto_bounds.is_valid(),
-                min_auto_bounds: self.min_auto_bounds,
-                ..memory
-            };
-            memory.clone().store(ui.ctx(), node_graph_id);
-        }
-
         let NodeGraphMemory {
-            mut auto_bounds,
             last_screen_transform,
             selected_nodes,
             node_data,
-            ..
         } = memory;
 
         // reorder nodes based selection history
@@ -788,19 +773,13 @@ impl NodeGraph {
             }
         });
 
-        // --- Bound computation ---
-        let mut bounds = *last_screen_transform.bounds();
-
-        // Allow `Shift+C` to recent bounds
-        auto_bounds |= ui.input().modifiers.shift_only() && ui.input().key_pressed(Key::C);
-
-        // Set bounds automatically based on content.
-        if auto_bounds || !bounds.is_valid() {
-            bounds = self.min_auto_bounds;
-        }
-
         let transform = {
-            let mut transform = ScreenTransform::new(rect, bounds, center_x_axis, center_y_axis);
+            let mut transform = ScreenTransform::new(
+                rect,
+                *last_screen_transform.bounds(),
+                center_x_axis,
+                center_y_axis,
+            );
 
             transform.restore_aspect_ratio(&last_screen_transform);
 
@@ -810,7 +789,6 @@ impl NodeGraph {
             {
                 response = response.on_hover_cursor(CursorIcon::Grabbing);
                 transform.translate_bounds(-response.drag_delta());
-                auto_bounds = false;
             }
 
             // Zooming
@@ -818,13 +796,11 @@ impl NodeGraph {
                 let zoom_factor = Vec2::splat(ui.input().zoom_delta());
                 if zoom_factor != Vec2::splat(1.0) {
                     transform.zoom(zoom_factor, hover_pos);
-                    auto_bounds = false;
                 }
 
                 let scroll_delta = ui.input().scroll_delta;
                 if scroll_delta != Vec2::ZERO {
                     transform.translate_bounds(-scroll_delta);
-                    auto_bounds = false;
                 }
             }
 
@@ -854,8 +830,6 @@ impl NodeGraph {
         let inner = add_contents(&mut child_ui);
 
         let memory = NodeGraphMemory {
-            auto_bounds,
-            min_auto_bounds: self.min_auto_bounds,
             last_screen_transform: transform,
             node_data: self
                 .nodes
