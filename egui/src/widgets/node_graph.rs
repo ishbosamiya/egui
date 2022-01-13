@@ -8,7 +8,7 @@ use epaint::{
 
 use crate::{
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Response, Sense, Ui,
+    Context, CursorIcon, Id, IdMap, InnerResponse, Key, Layout, PointerButton, Response, Sense, Ui,
     WidgetText,
 };
 
@@ -791,8 +791,8 @@ impl NodeGraph {
         // --- Bound computation ---
         let mut bounds = *last_screen_transform.bounds();
 
-        // Allow double clicking to reset to automatic bounds.
-        auto_bounds |= response.double_clicked_by(PointerButton::Primary);
+        // Allow `Shift+C` to recent bounds
+        auto_bounds |= ui.input().modifiers.shift_only() && ui.input().key_pressed(Key::C);
 
         // Set bounds automatically based on content.
         if auto_bounds || !bounds.is_valid() {
@@ -802,8 +802,7 @@ impl NodeGraph {
         let transform = {
             let mut transform = ScreenTransform::new(rect, bounds, center_x_axis, center_y_axis);
 
-            // Enforce equal aspect ratio.
-            transform.set_aspect(1.0);
+            transform.restore_aspect_ratio(&last_screen_transform);
 
             // Dragging
             if response.dragged_by(PointerButton::Middle)

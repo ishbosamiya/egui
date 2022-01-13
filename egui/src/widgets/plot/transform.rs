@@ -298,4 +298,30 @@ impl ScreenTransform {
                 .expand_y((current_aspect / aspect - 1.0) * self.bounds.height() * 0.5);
         }
     }
+
+    /// Expand or contract the bounds to create the same aspect ratio
+    /// as the given transform
+    pub fn restore_aspect_ratio(&mut self, transform: &ScreenTransform) {
+        let epsilon = 1e-5;
+        let width_diff = (transform.frame().width() - self.frame.width()).abs();
+        let height_diff = (transform.frame().height() - self.frame.height()).abs();
+
+        if width_diff < epsilon && height_diff < epsilon {
+            // do nothing
+        } else {
+            let tbw = transform.bounds().width();
+            let tfw = transform.frame().width() as f64;
+            let bw = self.bounds.width();
+            let fw = self.frame().width() as f64;
+            let new_bounds_width = tbw / tfw * fw;
+            self.bounds.expand_x((new_bounds_width - bw) * 0.5);
+
+            let tbh = transform.bounds().height();
+            let tfh = transform.frame().height() as f64;
+            let bh = self.bounds.height();
+            let fh = self.frame().height() as f64;
+            let new_bounds_height = tbh / tfh * fh;
+            self.bounds.expand_y((new_bounds_height - bh) * 0.5);
+        }
+    }
 }
