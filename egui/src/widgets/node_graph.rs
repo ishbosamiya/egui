@@ -483,6 +483,7 @@ struct NodeGraphMemory {
     /// List of nodes that are currently selected, with selection
     /// order going from left to right as least recent to most recent.
     selected_nodes: Vec<Id>,
+    parameter_link_dragged: Option<(Id, Id)>,
 }
 
 impl NodeGraphMemory {
@@ -609,14 +610,17 @@ impl NodeGraph {
             .collect()
     }
 
-    /// Interact with the UI and return the list of selected nodes
+    /// Interact with the UI and return the list of selected nodes and
+    /// the parameter link dragged
     fn interact(
         interactables: &[Interactable],
         selected_nodes: Vec<Id>,
+        parameter_link_dragged: Option<(Id, Id)>,
         ui: &Ui,
         response: &Response,
-    ) -> Vec<Id> {
+    ) -> (Vec<Id>, Option<(Id, Id)>) {
         let mut selected_nodes = selected_nodes;
+        let mut parameter_link_dragged = parameter_link_dragged;
         if let Some(hover_pos) = response.hover_pos() {
             if response.clicked_by(PointerButton::Primary) {
                 let node_interact_radius_sq: f32 = (16.0f32).powi(2);
@@ -676,13 +680,23 @@ impl NodeGraph {
                             }
                         }
                     }
+                    if let InteractionType::ParameterLinker(parameter_id) =
+                        interactable.interaction_type
+                    {
+                        if let Some((start_node, start_parameter)) = parameter_link_dragged {
+                            // TODO: need to actually link the things
+                            parameter_link_dragged = None;
+                        } else {
+                            parameter_link_dragged = Some((interactable.node_id, parameter_id));
+                        }
+                    }
                 } else if ui.input().modifiers.is_none() {
                     // deselect all nodes
                     selected_nodes.clear();
                 }
             }
         }
-        selected_nodes
+        (selected_nodes, parameter_link_dragged)
     }
 
     pub fn show<R>(
@@ -743,12 +757,14 @@ impl NodeGraph {
                     .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                     .collect(),
                 selected_nodes: Vec::new(),
+                parameter_link_dragged: None,
             });
 
         let NodeGraphMemory {
             last_screen_transform,
             selected_nodes,
             node_data,
+            parameter_link_dragged,
         } = memory;
 
         // reorder nodes based selection history
@@ -809,7 +825,17 @@ impl NodeGraph {
 
         let interactables = self.ui(&selected_nodes, ui, &transform);
 
-        let selected_nodes = Self::interact(&interactables, selected_nodes, ui, &response);
+        let (selected_nodes, parameter_link_dragged) = Self::interact(
+            &interactables,
+            selected_nodes,
+            parameter_link_dragged,
+            ui,
+            &response,
+        );
+
+        if let Some(parameter_link_dragged) = parameter_link_dragged {
+            dbg!(parameter_link_dragged);
+        }
 
         if !selected_nodes.is_empty()
             && response.dragged_by(PointerButton::Primary)
@@ -837,6 +863,7 @@ impl NodeGraph {
                 .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                 .collect(),
             selected_nodes,
+            parameter_link_dragged,
         };
         memory.store(ui.ctx(), node_graph_id);
 
