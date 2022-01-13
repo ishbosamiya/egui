@@ -8,7 +8,8 @@ use epaint::{
 
 use crate::{
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, IdMap, InnerResponse, PointerButton, Response, Sense, Ui, WidgetText,
+    Context, CursorIcon, Id, IdMap, InnerResponse, Key, PointerButton, Response, Sense, Ui,
+    WidgetText,
 };
 
 enum InteractionType {
@@ -774,7 +775,19 @@ impl NodeGraph {
                     // deselect all nodes
                     selected_nodes.clear();
                 }
+            } else if response.clicked_by(PointerButton::Secondary) {
+                // reset the parameter link dragging
+                //
+                // TODO: might want to convert this to be a context
+                // menu that is defined by the user
+                parameter_link_dragged = None;
             }
+        }
+        if response.clicked_elsewhere() || ui.input().key_pressed(Key::Escape) {
+            // need to reset the events between clicks if there is a
+            // click outside of the node graph
+
+            parameter_link_dragged = None;
         }
         (selected_nodes, parameter_link_dragged, new_link)
     }
