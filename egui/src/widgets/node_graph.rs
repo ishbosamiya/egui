@@ -8,8 +8,7 @@ use epaint::{
 
 use crate::{
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Response, Sense, Ui,
-    WidgetText,
+    Context, CursorIcon, Id, IdMap, InnerResponse, PointerButton, Response, Sense, Ui, WidgetText,
 };
 
 enum InteractionType {
@@ -308,11 +307,9 @@ impl Node {
     fn ui(
         &self,
         selected: Option<Selected>,
-        ui: &mut Ui,
+        ui: &Ui,
         transform: &ScreenTransform,
-    ) -> Vec<Interactable> {
-        ui.set_clip_rect(*transform.frame());
-
+    ) -> (Vec<Shape>, Vec<Interactable>) {
         let color = ui.style().visuals.text_color();
         let heading_galley =
             ui.fonts()
@@ -396,7 +393,6 @@ impl Node {
                 (new_shapes, interactables)
             })
             .unzip();
-        let input_shapes: Vec<Shape> = input_shapes.into_iter().flatten().collect();
         let input_interactables: Vec<Interactable> =
             input_interactables.into_iter().flatten().collect();
         let inputs_param_size = Vec2::new(inputs_param_size_x.unwrap_or(0.0), inputs_param_size_y);
@@ -406,13 +402,11 @@ impl Node {
             .max(outputs_param_size.x)
             .max(self.width);
 
-        let mut shapes = Vec::new();
-
         let heading_rect = Align2::CENTER_TOP.anchor_rect(Rect::from_min_size(
             initial_pos + Vec2::new(background_width * 0.5, 0.0),
             heading_galley.size(),
         ));
-        shapes.push(Shape::galley(heading_rect.min, heading_galley));
+        let heading_shape = Shape::galley(heading_rect.min, heading_galley);
 
         // must translate all the output elements
         if background_width > self.width {
@@ -432,6 +426,8 @@ impl Node {
             ),
         );
 
+        let mut shapes = Vec::new();
+
         if let Some(selected) = selected {
             let stroke = match selected {
                 Selected::MostRecent => ui.visuals().selection.stroke,
@@ -440,20 +436,17 @@ impl Node {
                     Color32::from_rgb(188, 67, 6),
                 ),
             };
-            ui.painter().rect_stroke(background_rect, 2.0, stroke);
+            shapes.push(Shape::rect_stroke(background_rect, 2.0, stroke));
         }
-        ui.painter()
-            .rect_filled(background_rect, 2.0, ui.style().visuals.faint_bg_color);
+        shapes.push(Shape::rect_filled(
+            background_rect,
+            2.0,
+            ui.style().visuals.faint_bg_color,
+        ));
 
-        let ui = ui.child_ui(background_rect, Layout::default());
-
-        ui.painter().sub_region(*transform.frame()).extend(shapes);
-        ui.painter()
-            .sub_region(*transform.frame())
-            .extend(output_shapes);
-        ui.painter()
-            .sub_region(*transform.frame())
-            .extend(input_shapes);
+        shapes.push(heading_shape);
+        shapes.extend(output_shapes.into_iter());
+        shapes.extend(input_shapes.into_iter().flatten());
 
         let mut interactables = vec![
             Interactable::new(self.id, background_rect, InteractionType::Node),
@@ -474,7 +467,7 @@ impl Node {
         let mut input_interactables = input_interactables;
         interactables.append(&mut input_interactables);
 
-        interactables
+        (shapes, interactables)
     }
 }
 
@@ -606,12 +599,14 @@ impl NodeGraph {
             }
         }
 
+        ui.set_clip_rect(*transform.frame());
+
         ui.painter().sub_region(*transform.frame()).extend(shapes);
 
-        let interactables: Vec<_> = self
+        let (node_shapes, interactables): (Vec<_>, Vec<_>) = self
             .nodes
             .iter()
-            .flat_map(|node| {
+            .map(|node| {
                 node.ui(
                     selected_nodes
                         .iter()
@@ -623,13 +618,14 @@ impl NodeGraph {
                                 Selected::NotMostRecent
                             }
                         }),
-                    &mut ui.child_ui(*transform.frame(), Layout::default()),
+                    ui,
                     transform,
                 )
             })
-            .collect();
+            .unzip();
+        let interactables: Vec<_> = interactables.into_iter().flatten().collect();
 
-        for link in links.iter() {
+        let link_shapes = links.iter().map(|link| {
             let parameter1_interactable = interactables
                 .iter()
                 .find(|interactable| match interactable.interaction_type {
@@ -653,9 +649,15 @@ impl NodeGraph {
             let p1 = parameter1_interactable.rect.center();
             let p2 = parameter2_interactable.rect.center();
 
-            ui.painter()
-                .line_segment([p1, p2], Stroke::new(3.0, Color32::TEMPORARY_COLOR));
-        }
+            Shape::line_segment([p1, p2], Stroke::new(3.0, Color32::TEMPORARY_COLOR))
+        });
+
+        let mut shapes = Vec::new();
+
+        shapes.extend(link_shapes);
+        shapes.extend(node_shapes.into_iter().flatten());
+
+        ui.painter().extend(shapes);
 
         interactables
     }
