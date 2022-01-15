@@ -11,6 +11,92 @@ use crate::{
     Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Sense, Ui, WidgetText,
 };
 
+struct LinkShapeIdx {
+    shape_idx: ShapeIdx,
+}
+
+struct LinkDrawData {
+    shape_idx: LinkShapeIdx,
+}
+
+pub struct Link {
+    node1: Id,
+    parameter1: Id,
+    node2: Id,
+    parameter2: Id,
+}
+
+impl Link {
+    pub fn new(node1: Id, parameter1: Id, node2: Id, parameter2: Id) -> Self {
+        Self {
+            node1,
+            parameter1,
+            node2,
+            parameter2,
+        }
+    }
+
+    fn setup_shapes(ui: &mut Ui) -> LinkDrawData {
+        let shape_idx = ui.painter().add(Shape::Noop);
+
+        LinkDrawData {
+            shape_idx: LinkShapeIdx { shape_idx },
+        }
+    }
+
+    #[inline]
+    fn get_node<'a>(
+        link_node_id: Id,
+        nodes: &'a [Node],
+        nodes_draw_data: &'a [NodeDrawData],
+    ) -> Option<(&'a Node, &'a NodeDrawData)> {
+        nodes
+            .iter()
+            .zip(nodes_draw_data.iter())
+            .find(|(node, _node_draw_data)| node.id == link_node_id)
+    }
+
+    #[inline]
+    fn get_param<'a>(
+        link_param_id: Id,
+        node: &'a Node,
+        node_draw_data: &'a NodeDrawData,
+    ) -> Option<(&'a Parameter, &'a ParameterDrawData)> {
+        node.parameters
+            .iter()
+            .zip(node_draw_data.parameters_draw_data.iter())
+            .find(|(param, _param_draw_data)| param.id == link_param_id)
+    }
+
+    fn draw_shapes(
+        &self,
+        ui: &mut Ui,
+        link_draw_data: &LinkDrawData,
+        nodes: &[Node],
+        nodes_draw_data: &[NodeDrawData],
+    ) {
+        let line_stroke = Stroke::new(3.0, Color32::TEMPORARY_COLOR);
+
+        let (node1, node1_draw_data) = Self::get_node(self.node1, nodes, nodes_draw_data)
+            .expect("link has node id that doesn't exist");
+        let (_param1, param1_draw_data) = Self::get_param(self.parameter1, node1, node1_draw_data)
+            .expect("link has parameter id that doesn't exist");
+
+        let (node2, node2_draw_data) = Self::get_node(self.node2, nodes, nodes_draw_data)
+            .expect("link has node id that doesn't exist");
+        let (_param2, param2_draw_data) = Self::get_param(self.parameter2, node2, node2_draw_data)
+            .expect("link has parameter id that doesn't exist");
+
+        let pos1 = param1_draw_data.shape_rect.unwrap().center();
+        let pos2 = param2_draw_data.shape_rect.unwrap().center();
+
+        ui.painter().set(
+            link_draw_data.shape_idx.shape_idx,
+            Shape::line_segment([pos1, pos2], line_stroke),
+        );
+    }
+}
+
 #[derive(PartialEq)]
 pub enum ParameterShape {
     Circle,
@@ -540,6 +626,13 @@ pub struct NodeGraph {
     nodes: Vec<Node>,
 }
 
+pub struct NodeGraphResponse<R> {
+    pub added_link: Option<Link>,
+    pub deleted_link: Option<usize>,
+
+    pub inner_response: InnerResponse<R>,
+}
+
 impl NodeGraph {
     pub fn new(id_source: impl std::hash::Hash) -> Self {
         Self {
@@ -601,8 +694,9 @@ impl NodeGraph {
     pub fn show<R>(
         mut self,
         ui: &mut Ui,
+        links: &[Link],
         add_contents: impl FnOnce(&mut Ui) -> R,
-    ) -> InnerResponse<R> {
+    ) -> NodeGraphResponse<R> {
         let center_x_axis = false;
         let center_y_axis = false;
 
@@ -736,9 +830,16 @@ impl NodeGraph {
 
         let mut ui = ui.child_ui(rect, *ui.layout());
 
-        let mut nodes_draw_data = self.setup_shapes(&mut ui, &transform);
+        let (links_node_data, mut nodes_draw_data) = self.setup_shapes(&mut ui, links, &transform);
 
-        self.draw_shapes(&mut ui, &selected_nodes, &transform, &mut nodes_draw_data);
+        self.draw_shapes(
+            &mut ui,
+            &selected_nodes,
+            &transform,
+            links,
+            &links_node_data,
+            &mut nodes_draw_data,
+        );
 
         let inner = add_contents(&mut ui);
 
@@ -753,7 +854,11 @@ impl NodeGraph {
         };
         memory.store(ui.ctx(), node_graph_id);
 
-        InnerResponse::new(inner, response)
+        NodeGraphResponse {
+            added_link: None,
+            deleted_link: None,
+            inner_response: InnerResponse::new(inner, response),
+        }
     }
 
     /// Setup the layering of the UI elements. Elements whose position
@@ -766,7 +871,12 @@ impl NodeGraph {
     ///
     /// TODO: Elements that can be interacted with must create the
     /// interactable element at this stage.
-    fn setup_shapes(&mut self, ui: &mut Ui, transform: &ScreenTransform) -> Vec<NodeDrawData> {
+    fn setup_shapes(
+        &mut self,
+        ui: &mut Ui,
+        links: &[Link],
+        transform: &ScreenTransform,
+    ) -> (Vec<LinkDrawData>, Vec<NodeDrawData>) {
         // TODO: need to figure out if ui.child_ui() must be done or
         // not each of the different elements.
 
@@ -784,13 +894,17 @@ impl NodeGraph {
             ui.painter().extend(shapes);
         }
 
-        let nodes_draw_data: Vec<_> = self
+        // links
+        let links_draw_data = links.iter().map(|_link| Link::setup_shapes(ui)).collect();
+
+        // nodes
+        let nodes_draw_data = self
             .nodes
             .iter_mut()
             .map(|node| node.setup_shapes(ui, transform))
             .collect();
 
-        nodes_draw_data
+        (links_draw_data, nodes_draw_data)
     }
 
     /// Draws the final shapes and updates any missing draw data.
@@ -799,12 +913,19 @@ impl NodeGraph {
         ui: &mut Ui,
         selected_nodes: &[Id],
         transform: &ScreenTransform,
+        links: &[Link],
+        links_draw_data: &[LinkDrawData],
         nodes_draw_data: &mut [NodeDrawData],
     ) {
+        // order in which the elements are drawn now does not matter
+        // since the layering part is already done in the first pass
+        // aka setup_shapes()
+
         // background is already painted
 
+        // nodes must be drawn before links since the parameter shape
+        // rects need to be setup in the NodeDrawData
         debug_assert_eq!(self.nodes.len(), nodes_draw_data.len());
-
         self.nodes
             .iter()
             .zip(nodes_draw_data.iter_mut())
@@ -824,6 +945,14 @@ impl NodeGraph {
                     node_draw_data,
                     transform,
                 );
+            });
+
+        debug_assert_eq!(links.len(), links_draw_data.len());
+        links
+            .iter()
+            .zip(links_draw_data.iter())
+            .for_each(|(link, link_draw_data)| {
+                link.draw_shapes(ui, link_draw_data, &self.nodes, nodes_draw_data);
             });
     }
 }
