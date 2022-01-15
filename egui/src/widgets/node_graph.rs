@@ -84,11 +84,8 @@ impl ParameterShape {
 
     pub fn get_num_shapes(&self) -> usize {
         match self {
-            ParameterShape::Circle => 1,
-            ParameterShape::Diamond => 1,
-            ParameterShape::Square => 1,
-            ParameterShape::Cross => 2,
-            ParameterShape::Plus => 2,
+            ParameterShape::Circle | ParameterShape::Diamond | ParameterShape::Square => 1,
+            ParameterShape::Cross | ParameterShape::Plus => 2,
         }
     }
 }
@@ -281,7 +278,7 @@ enum Selected {
 }
 
 struct NodeShapeIdx {
-    selection_border_idx: Option<ShapeIdx>,
+    background_border_idx: ShapeIdx,
     background_idx: ShapeIdx,
     heading_background_idx: ShapeIdx,
     heading_idx: ShapeIdx,
@@ -343,19 +340,14 @@ impl Node {
         self
     }
 
-    fn setup_shapes(
-        &mut self,
-        ui: &mut Ui,
-        selected: Option<Selected>,
-        transform: &ScreenTransform,
-    ) -> NodeDrawData {
+    fn setup_shapes(&mut self, ui: &mut Ui, transform: &ScreenTransform) -> NodeDrawData {
         let node_position = transform.transformed_pos(&self.position);
         let mut ui = ui.child_ui(
             Rect::from_two_pos(node_position, node_position + Vec2::new(self.width, 0.0)),
             *ui.layout(),
         );
 
-        let selection_border_idx = selected.map(|_| ui.painter().add(Shape::Noop));
+        let background_border_idx = ui.painter().add(Shape::Noop);
         let background_idx = ui.painter().add(Shape::Noop);
         let heading_background_idx = ui.painter().add(Shape::Noop);
         let heading_idx = ui.painter().add(Shape::Noop);
@@ -368,7 +360,7 @@ impl Node {
         NodeDrawData {
             parameters_draw_data,
             node_shape_idx: NodeShapeIdx {
-                selection_border_idx,
+                background_border_idx,
                 background_idx,
                 heading_background_idx,
                 heading_idx,
@@ -413,6 +405,8 @@ impl Node {
         node_draw_data: &mut NodeDrawData,
         transform: &ScreenTransform,
     ) {
+        let background_stroke_color = ui.visuals().code_bg_color;
+        let background_color = ui.visuals().extreme_bg_color;
         let background_corner_radius = 2.0;
         let heading_color = ui.style().visuals.text_color();
         let heading_background_corner_radius = 2.0_f32.min(background_corner_radius);
@@ -471,27 +465,24 @@ impl Node {
             );
         }
 
-        if let Some(idx) = node_draw_data.node_shape_idx.selection_border_idx {
-            let stroke = match selected.unwrap() {
+        let stroke = match selected {
+            Some(selected) => match selected {
                 Selected::MostRecent => ui.visuals().selection.stroke,
                 Selected::NotMostRecent => Stroke::new(
                     ui.visuals().selection.stroke.width,
                     Color32::from_rgb(188, 67, 6),
                 ),
-            };
-            ui.painter().set(
-                idx,
-                Shape::rect_stroke(background_rect, background_corner_radius, stroke),
-            );
-        }
+            },
+            None => Stroke::new(ui.visuals().selection.stroke.width, background_stroke_color),
+        };
+        ui.painter().set(
+            node_draw_data.node_shape_idx.background_border_idx,
+            Shape::rect_stroke(background_rect, background_corner_radius, stroke),
+        );
 
         ui.painter().set(
             node_draw_data.node_shape_idx.background_idx,
-            Shape::rect_filled(
-                background_rect,
-                background_corner_radius,
-                ui.style().visuals.faint_bg_color,
-            ),
+            Shape::rect_filled(background_rect, background_corner_radius, background_color),
         );
     }
 }
@@ -745,7 +736,7 @@ impl NodeGraph {
 
         let mut ui = ui.child_ui(rect, *ui.layout());
 
-        let mut nodes_draw_data = self.setup_shapes(&mut ui, &selected_nodes, &transform);
+        let mut nodes_draw_data = self.setup_shapes(&mut ui, &transform);
 
         self.draw_shapes(&mut ui, &selected_nodes, &transform, &mut nodes_draw_data);
 
@@ -775,12 +766,7 @@ impl NodeGraph {
     ///
     /// TODO: Elements that can be interacted with must create the
     /// interactable element at this stage.
-    fn setup_shapes(
-        &mut self,
-        ui: &mut Ui,
-        selected_nodes: &[Id],
-        transform: &ScreenTransform,
-    ) -> Vec<NodeDrawData> {
+    fn setup_shapes(&mut self, ui: &mut Ui, transform: &ScreenTransform) -> Vec<NodeDrawData> {
         // TODO: need to figure out if ui.child_ui() must be done or
         // not each of the different elements.
 
@@ -801,27 +787,13 @@ impl NodeGraph {
         let nodes_draw_data: Vec<_> = self
             .nodes
             .iter_mut()
-            .map(|node| {
-                node.setup_shapes(
-                    ui,
-                    selected_nodes
-                        .iter()
-                        .find(|selected_node| **selected_node == node.id)
-                        .map(|selected_node| {
-                            if selected_node == selected_nodes.last().unwrap() {
-                                Selected::MostRecent
-                            } else {
-                                Selected::NotMostRecent
-                            }
-                        }),
-                    transform,
-                )
-            })
+            .map(|node| node.setup_shapes(ui, transform))
             .collect();
 
         nodes_draw_data
     }
 
+    /// Draws the final shapes and updates any missing draw data.
     fn draw_shapes(
         &self,
         ui: &mut Ui,
@@ -839,8 +811,6 @@ impl NodeGraph {
             .for_each(|(node, node_draw_data)| {
                 node.draw_shapes(
                     ui,
-                    // TODO: cache whether the node is selected or not
-                    // when it is first computed in setup_shapes()
                     selected_nodes
                         .iter()
                         .find(|selected_node| **selected_node == node.id)
