@@ -205,6 +205,34 @@ impl ScreenTransform {
         }
     }
 
+    /// Scaling factor along x axis for transform space to screen space
+    pub fn scale_x(&self) -> f32 {
+        remap(
+            1.0,
+            self.bounds.min[0] as f32..=self.bounds.max[0] as f32,
+            (self.frame.left())..=(self.frame.right()),
+        ) - remap(
+            0.0,
+            self.bounds.min[0] as f32..=self.bounds.max[0] as f32,
+            (self.frame.left())..=(self.frame.right()),
+        )
+    }
+
+    /// Scaling factor along y axis for transform space to screen space
+    #[allow(dead_code)]
+    pub fn scale_y(&self) -> f32 {
+        remap(
+            1.0,
+            self.bounds.min[1] as f32..=self.bounds.max[1] as f32,
+            (self.frame.bottom())..=(self.frame.top()), // negated y axis!
+        ) - remap(
+            0.0,
+            self.bounds.min[1] as f32..=self.bounds.max[1] as f32,
+            (self.frame.bottom())..=(self.frame.top()), // negated y axis!
+        )
+    }
+
+    /// Transform given position in transform space to screen space
     pub fn transformed_pos(&self, pos: &Pos2) -> Pos2 {
         let x = remap(
             pos.x,
@@ -219,6 +247,7 @@ impl ScreenTransform {
         pos2(x, y)
     }
 
+    /// Transform given value in transform space to screen space
     pub fn position_from_value(&self, value: &Value) -> Pos2 {
         let x = remap(
             value.x,
@@ -233,6 +262,23 @@ impl ScreenTransform {
         pos2(x as f32, y as f32)
     }
 
+    /// Transform given position in screen space to transform space
+    #[allow(dead_code)]
+    pub fn untransform_pos(&self, pos: &Pos2) -> Pos2 {
+        let x = remap(
+            pos.x,
+            (self.frame.left())..=(self.frame.right()),
+            self.bounds.min[0] as f32..=self.bounds.max[0] as f32,
+        );
+        let y = remap(
+            pos.y,
+            (self.frame.bottom())..=(self.frame.top()), // negated y axis!
+            self.bounds.min[1] as f32..=self.bounds.max[1] as f32,
+        );
+        Pos2::new(x, y)
+    }
+
+    /// Transform given position in screen space to transform space
     pub fn value_from_position(&self, pos: Pos2) -> Value {
         let x = remap(
             pos.x as f64,
