@@ -364,6 +364,144 @@ impl Parameter {
     }
 }
 
+/// Any element that is interactable must implement this trait.
+///
+/// The order of operations is as follows. The test for whether the ui
+/// can be interacted with with the current state of input/events. If
+/// it is possible, then hover indepenent function is called. If this
+/// fails to interact, then hover dependent function is called.
+trait Interactable<'a> {
+    type InteractionResponse;
+    type HoverExtraData;
+    type NoHoverExtraData;
+
+    /// Checks if any interaction events have taken place. Only if
+    /// true, should [`Self::interact_no_hover()`] and/or
+    /// [`Self::interact_on_hover()`] be called.
+    ///
+    /// Note: It is convinent to mention all the various interaction
+    /// events by their shortcut even if there is some sort of overlap
+    /// of the events between the different interactions.
+    #[must_use]
+    fn should_interact(ui: &Ui, response: &Response) -> bool;
+
+    /// Interact with UI when interaction is independent of cursor
+    /// hovering over the Response. Must return `Some(R)` if any
+    /// interaction actually takes place. This is done so that
+    /// interaction calls are made for layers below this layer. Must
+    /// return `None` if no interaction took place.
+    ///
+    /// Note: depends on [`Self::should_interact()`]. Only if
+    /// [`Self::should_interact()`] returns true will
+    /// [`Self::interact_no_hover()`] be called.
+    #[must_use]
+    fn interact_hover_independent(
+        &self,
+        ui: &Ui,
+        response: &Response,
+        extra_data: Self::NoHoverExtraData,
+    ) -> Option<Self::InteractionResponse>;
+
+    /// Interact with UI when cursor hovers over the Response. Must
+    /// return `Some(R)` if any interaction actually takes place. This
+    /// is done so that interaction calls are made for layers below
+    /// this layer. Must return `None` if no interaction took place.
+    ///
+    /// Note: depends on [`Self::should_interact()`]. Only if
+    /// [`Self::should_interact()`] returns true will
+    /// [`Self::interact_on_hover()`] be called.
+    #[must_use]
+    fn interact_on_hover(
+        &self,
+        ui: &Ui,
+        response: &Response,
+        hover_pos: Pos2,
+        extra_data: Self::HoverExtraData,
+    ) -> Option<Self::InteractionResponse>;
+}
+
+impl<'a> Interactable<'a> for Node {
+    type InteractionResponse = NodeInteractionResponse;
+    type HoverExtraData = (&'a mut Option<(Id, Id)>, &'a NodeDrawData);
+    type NoHoverExtraData = &'a mut Option<(Id, Id)>;
+
+    fn should_interact(ui: &Ui, response: &Response) -> bool {
+        // link creation start or end
+        response.clicked_by(PointerButton::Primary)
+        // cancel link creation
+        || ui.input().key_pressed(Key::Escape)
+    }
+
+    fn interact_hover_independent(
+        &self,
+        ui: &Ui,
+        _response: &Response,
+        link_creation_start: Self::NoHoverExtraData,
+    ) -> Option<Self::InteractionResponse> {
+        // cancel link creation
+        if ui.input().key_pressed(Key::Escape) {
+            *link_creation_start = None;
+            Some(NodeInteractionResponse::no_response_propagation())
+        } else {
+            None
+        }
+    }
+
+    fn interact_on_hover(
+        &self,
+        _ui: &Ui,
+        response: &Response,
+        hover_pos: Pos2,
+        (link_creation_start, node_draw_data): Self::HoverExtraData,
+    ) -> Option<Self::InteractionResponse> {
+        let parameter_interaction_dist_sq = 16.0_f32.powi(2);
+
+        let parameter_data = self
+            .parameters
+            .iter()
+            .zip(node_draw_data.parameters_draw_data.iter())
+            .filter_map(|(parameter, parameter_draw_data)| {
+                parameter_draw_data.shape_rect.and_then(|rect| {
+                    let dist_sq = rect.distance_sq_to_pos(hover_pos);
+                    if dist_sq < parameter_interaction_dist_sq {
+                        Some((dist_sq, parameter, parameter_draw_data))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .min_by_key(|(dist_sq, _, _)| dist_sq.ord());
+
+        // link creation start or end
+        if response.clicked_by(PointerButton::Primary) {
+            if let Some((_param_dist_sq, parameter, _parameter_draw_data)) = parameter_data {
+                // some parameter is interactable
+
+                if let Some((start_node_id, start_parameter_id)) = link_creation_start.take() {
+                    // complete link is formed
+
+                    *link_creation_start = None;
+
+                    return Some(NodeInteractionResponse {
+                        add_link: Some(Link::new(
+                            start_node_id,
+                            start_parameter_id,
+                            self.id,
+                            parameter.id,
+                        )),
+                    });
+                } else {
+                    // start of a new link
+
+                    *link_creation_start = Some((self.id, parameter.id));
+                    return Some(NodeInteractionResponse::no_response_propagation());
+                }
+            }
+        }
+        None
+    }
+}
+
 struct NodeInteractionResponse {
     add_link: Option<Link>,
 }
@@ -596,79 +734,6 @@ impl Node {
         );
 
         node_draw_data.background_rect = Some(background_rect);
-    }
-
-    /// Checks if any interaction events have taken place. Only if
-    /// true, should [`Self::interact()`] be called.
-    ///
-    /// The response must cover the entire node graph.
-    #[must_use]
-    fn should_interact(ui: &Ui, response: &Response) -> bool {
-        // link creation start or end
-        response.clicked_by(PointerButton::Primary)
-        // cancel link creation
-        || ui.input().key_pressed(Key::Escape)
-    }
-
-    /// Interacts with any parameters and returns [`Option::Some`]
-    /// node interaction response if any interaction took place, the
-    /// internals of [`NodeInteractionResponse`] should still be none.
-    #[must_use]
-    fn interact(
-        &self,
-        ui: &Ui,
-        response: &Response,
-        link_creation_start: &mut Option<(Id, Id)>,
-        node_draw_data: &NodeDrawData,
-    ) -> Option<NodeInteractionResponse> {
-        let parameter_interaction_dist_sq = 16.0_f32.powi(2);
-
-        // link creation start or end
-        if response.clicked_by(PointerButton::Primary) {
-            if let Some(hover_pos) = response.hover_pos() {
-                let parameter_data = self
-                    .parameters
-                    .iter()
-                    .zip(node_draw_data.parameters_draw_data.iter())
-                    .filter_map(|(parameter, parameter_draw_data)| {
-                        parameter_draw_data.shape_rect.and_then(|rect| {
-                            let dist_sq = rect.distance_sq_to_pos(hover_pos);
-                            if dist_sq < parameter_interaction_dist_sq {
-                                Some((dist_sq, parameter, parameter_draw_data))
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                    .min_by_key(|(dist_sq, _, _)| dist_sq.ord());
-
-                if let Some((_param_dist_sq, parameter, _parameter_draw_data)) = parameter_data {
-                    // some parameter is interactable
-
-                    if let Some((start_node_id, start_parameter_id)) = link_creation_start.take() {
-                        *link_creation_start = None;
-
-                        return Some(NodeInteractionResponse {
-                            add_link: Some(Link::new(
-                                start_node_id,
-                                start_parameter_id,
-                                self.id,
-                                parameter.id,
-                            )),
-                        });
-                    } else {
-                        *link_creation_start = Some((self.id, parameter.id));
-                        return Some(NodeInteractionResponse::no_response_propagation());
-                    }
-                }
-            }
-        }
-        // cancel link creation
-        else if ui.input().key_pressed(Key::Escape) {
-            *link_creation_start = None;
-            return Some(NodeInteractionResponse::no_response_propagation());
-        }
-        None
     }
 }
 
@@ -1147,9 +1212,40 @@ impl NodeGraph {
 
         let mut add_link = None;
 
-        // TODO: ideally, any interactions requiring the hover pos
-        // should be kept separate, so 2 different functions that
-        // handle different things
+        // non hover dependent interactions
+        {
+            // TODO: some of the interactions in the node should not
+            // be part of the node interaction, it should be a
+            // separate thing. eg: link creation, it should be it's
+            // own thing
+
+            let interaction_res = self.nodes.iter().try_for_each(|node| {
+                // this can get confusing, if interaction takes place,
+                // then need to end the for loop Err(contents of the
+                // interaction response) is returned. If no Err is
+                // returned by the try_for_each(), no interaction took
+                // place
+                if let Some(response) =
+                    node.interact_hover_independent(ui, response, &mut link_creation_start)
+                {
+                    Err(response)
+                } else {
+                    Ok(())
+                }
+            });
+
+            // this is the confusing part, an Err as the result means
+            // that interaction has taken place
+            if let Err(response) = interaction_res {
+                return InteractionResponse {
+                    selected_nodes,
+                    link_creation_start,
+                    add_link: response.add_link,
+                    delete_link: None,
+                };
+            }
+        }
+
         if let Some(hover_pos) = response.hover_pos() {
             // node graph level interaction also requires node data,
             // so compute at the same time
@@ -1180,9 +1276,12 @@ impl NodeGraph {
                 // order of the layering of the UI elements
                 #[allow(clippy::collapsible_else_if)]
                 // node specific interaction
-                if let Some(interaction_response) =
-                    node.interact(ui, response, &mut link_creation_start, node_draw_data)
-                {
+                if let Some(interaction_response) = node.interact_on_hover(
+                    ui,
+                    response,
+                    hover_pos,
+                    (&mut link_creation_start, node_draw_data),
+                ) {
                     add_link = interaction_response.add_link;
                 }
                 // node graph specific interaction
