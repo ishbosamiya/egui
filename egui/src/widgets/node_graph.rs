@@ -13,6 +13,136 @@ use crate::{
     WidgetText,
 };
 
+struct LinkCreationInteractionResponse {
+    add_link: Option<Link>,
+}
+
+impl LinkCreationInteractionResponse {
+    /// Create new [`Self`] with all responses as [`Option::None`].
+    ///
+    /// Useful to create this when interaction takes place but no
+    /// resulting response is created that must be progagated forward.
+    pub fn no_response_propagation() -> Self {
+        Self { add_link: None }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[derive(Clone)]
+struct LinkCreation {
+    start_ids: Option<(Id, Id)>,
+}
+
+impl LinkCreation {
+    pub fn no_link() -> Self {
+        Self { start_ids: None }
+    }
+
+    pub fn draw_shapes(&self, ui: &mut Ui, nodes: &[Node], nodes_draw_data: &[NodeDrawData]) {
+        // TODO: need to decide if this should be dependent on the input color
+        let line_stroke = Stroke::new(3.0, Color32::WHITE);
+
+        if let Some((start_node_id, start_parameter_id)) = self.start_ids {
+            let (node, node_draw_data) = Link::get_node(start_node_id, nodes, nodes_draw_data)
+                .expect("link creation start has a node id that does not exist");
+            let (_parameter, parameter_draw_data) =
+                Link::get_param(start_parameter_id, node, node_draw_data)
+                    .expect("link creation start has a parameter id that does not exist");
+
+            let pos1 = parameter_draw_data.shape_rect.unwrap().center();
+            if let Some(pos2) = ui.input().pointer.hover_pos() {
+                ui.painter().line_segment([pos1, pos2], line_stroke);
+            }
+        }
+    }
+}
+
+impl<'a> Interactable<'a> for LinkCreation {
+    type InteractionResponse = LinkCreationInteractionResponse;
+    type HoverExtraData = (&'a Node, &'a NodeDrawData);
+    type NoHoverExtraData = ();
+
+    fn should_interact(ui: &Ui, response: &Response) -> bool {
+        // link creation start or end
+        (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none())
+        // cancel link creation
+        || (ui.input().key_pressed(Key::Escape) || (response.clicked_by(PointerButton::Secondary) && ui.input().modifiers.is_none()))
+    }
+
+    fn interact_hover_independent(
+        &mut self,
+        ui: &Ui,
+        response: &Response,
+        _extra_data: Self::NoHoverExtraData,
+    ) -> Option<Self::InteractionResponse> {
+        // cancel link creation
+        if ui.input().key_pressed(Key::Escape)
+            || (response.clicked_by(PointerButton::Secondary) && ui.input().modifiers.is_none())
+        {
+            self.start_ids = None;
+            Some(LinkCreationInteractionResponse::no_response_propagation())
+        } else {
+            None
+        }
+    }
+
+    /// Must provide the closest node to `hover_pos` along with that
+    /// [`NodeDrawData`]
+    fn interact_on_hover(
+        &mut self,
+        ui: &Ui,
+        response: &Response,
+        hover_pos: Pos2,
+        (node, node_draw_data): Self::HoverExtraData,
+    ) -> Option<Self::InteractionResponse> {
+        let parameter_interaction_dist_sq = 16.0_f32.powi(2);
+
+        let parameter_data = node
+            .parameters
+            .iter()
+            .zip(node_draw_data.parameters_draw_data.iter())
+            .filter_map(|(parameter, parameter_draw_data)| {
+                parameter_draw_data.shape_rect.and_then(|rect| {
+                    let dist_sq = rect.distance_sq_to_pos(hover_pos);
+                    if dist_sq < parameter_interaction_dist_sq {
+                        Some((dist_sq, parameter, parameter_draw_data))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .min_by_key(|(dist_sq, _, _)| dist_sq.ord());
+
+        // link creation start or end
+        if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
+            if let Some((_param_dist_sq, parameter, _parameter_draw_data)) = parameter_data {
+                // some parameter is interactable
+
+                if let Some((start_node_id, start_parameter_id)) = self.start_ids.take() {
+                    // complete link is formed
+
+                    self.start_ids = None;
+
+                    return Some(LinkCreationInteractionResponse {
+                        add_link: Some(Link::new(
+                            start_node_id,
+                            start_parameter_id,
+                            node.id,
+                            parameter.id,
+                        )),
+                    });
+                } else {
+                    // start of a new link
+
+                    self.start_ids = Some((node.id, parameter.id));
+                    return Some(LinkCreationInteractionResponse::no_response_propagation());
+                }
+            }
+        }
+        None
+    }
+}
+
 struct LinkShapeIdx {
     shape_idx: ShapeIdx,
 }
@@ -396,7 +526,7 @@ trait Interactable<'a> {
     /// [`Self::interact_no_hover()`] be called.
     #[must_use]
     fn interact_hover_independent(
-        &self,
+        &mut self,
         ui: &Ui,
         response: &Response,
         extra_data: Self::NoHoverExtraData,
@@ -412,108 +542,12 @@ trait Interactable<'a> {
     /// [`Self::interact_on_hover()`] be called.
     #[must_use]
     fn interact_on_hover(
-        &self,
+        &mut self,
         ui: &Ui,
         response: &Response,
         hover_pos: Pos2,
         extra_data: Self::HoverExtraData,
     ) -> Option<Self::InteractionResponse>;
-}
-
-impl<'a> Interactable<'a> for Node {
-    type InteractionResponse = NodeInteractionResponse;
-    type HoverExtraData = (&'a mut Option<(Id, Id)>, &'a NodeDrawData);
-    type NoHoverExtraData = &'a mut Option<(Id, Id)>;
-
-    fn should_interact(ui: &Ui, response: &Response) -> bool {
-        // link creation start or end
-        response.clicked_by(PointerButton::Primary)
-        // cancel link creation
-        || ui.input().key_pressed(Key::Escape)
-    }
-
-    fn interact_hover_independent(
-        &self,
-        ui: &Ui,
-        _response: &Response,
-        link_creation_start: Self::NoHoverExtraData,
-    ) -> Option<Self::InteractionResponse> {
-        // cancel link creation
-        if ui.input().key_pressed(Key::Escape) {
-            *link_creation_start = None;
-            Some(NodeInteractionResponse::no_response_propagation())
-        } else {
-            None
-        }
-    }
-
-    fn interact_on_hover(
-        &self,
-        _ui: &Ui,
-        response: &Response,
-        hover_pos: Pos2,
-        (link_creation_start, node_draw_data): Self::HoverExtraData,
-    ) -> Option<Self::InteractionResponse> {
-        let parameter_interaction_dist_sq = 16.0_f32.powi(2);
-
-        let parameter_data = self
-            .parameters
-            .iter()
-            .zip(node_draw_data.parameters_draw_data.iter())
-            .filter_map(|(parameter, parameter_draw_data)| {
-                parameter_draw_data.shape_rect.and_then(|rect| {
-                    let dist_sq = rect.distance_sq_to_pos(hover_pos);
-                    if dist_sq < parameter_interaction_dist_sq {
-                        Some((dist_sq, parameter, parameter_draw_data))
-                    } else {
-                        None
-                    }
-                })
-            })
-            .min_by_key(|(dist_sq, _, _)| dist_sq.ord());
-
-        // link creation start or end
-        if response.clicked_by(PointerButton::Primary) {
-            if let Some((_param_dist_sq, parameter, _parameter_draw_data)) = parameter_data {
-                // some parameter is interactable
-
-                if let Some((start_node_id, start_parameter_id)) = link_creation_start.take() {
-                    // complete link is formed
-
-                    *link_creation_start = None;
-
-                    return Some(NodeInteractionResponse {
-                        add_link: Some(Link::new(
-                            start_node_id,
-                            start_parameter_id,
-                            self.id,
-                            parameter.id,
-                        )),
-                    });
-                } else {
-                    // start of a new link
-
-                    *link_creation_start = Some((self.id, parameter.id));
-                    return Some(NodeInteractionResponse::no_response_propagation());
-                }
-            }
-        }
-        None
-    }
-}
-
-struct NodeInteractionResponse {
-    add_link: Option<Link>,
-}
-
-impl NodeInteractionResponse {
-    /// Create new [`Self`] with all responses as [`Option::None`].
-    ///
-    /// Useful to create this when interaction takes place but no
-    /// resulting response is created that must be progagated forward.
-    pub fn no_response_propagation() -> Self {
-        Self { add_link: None }
-    }
 }
 
 enum Selected {
@@ -740,9 +774,6 @@ impl Node {
 struct InteractionResponse {
     /// Currently selected nodes
     selected_nodes: Vec<Id>,
-    /// New link creation. Is [`Option::Some`] if a new link creation
-    /// is in progress with a tuple of NodeId and ParameterId
-    link_creation_start: Option<(Id, Id)>,
     /// Is [`Option::Some`] if a new link is created along with the
     /// link.
     add_link: Option<Link>,
@@ -774,9 +805,8 @@ struct NodeGraphMemory {
     /// List of nodes that are currently selected, with selection
     /// order going from left to right as least recent to most recent.
     selected_nodes: Vec<Id>,
-    /// If [`Option::Some`], a new link is currently being created
-    /// which contains the source's node id and parameter id.
-    link_creation_start: Option<(Id, Id)>,
+    /// Link creation data must persist between frames
+    link_creation: LinkCreation,
 }
 
 impl NodeGraphMemory {
@@ -932,14 +962,14 @@ impl NodeGraph {
                     .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                     .collect(),
                 selected_nodes: Vec::new(),
-                link_creation_start: None,
+                link_creation: LinkCreation::no_link(),
             });
 
         let NodeGraphMemory {
             last_screen_transform,
             selected_nodes,
             node_data,
-            link_creation_start,
+            mut link_creation,
         } = memory;
 
         // reorder nodes based selection history
@@ -1027,18 +1057,17 @@ impl NodeGraph {
 
         let InteractionResponse {
             selected_nodes,
-            link_creation_start,
             add_link,
             delete_link,
         } = self.interact(
             &ui,
             &response,
             selected_nodes,
-            link_creation_start,
+            &mut link_creation,
             &nodes_draw_data,
         );
 
-        self.draw_interaction_shapes(&mut ui, &link_creation_start, &nodes_draw_data);
+        self.draw_interaction_shapes(&mut ui, &link_creation, &nodes_draw_data);
 
         let inner = add_contents(&mut ui);
 
@@ -1050,7 +1079,7 @@ impl NodeGraph {
                 .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                 .collect(),
             selected_nodes,
-            link_creation_start,
+            link_creation,
         };
         memory.store(ui.ctx(), node_graph_id);
 
@@ -1164,26 +1193,36 @@ impl NodeGraph {
     fn draw_interaction_shapes(
         &self,
         ui: &mut Ui,
-        link_creation_start: &Option<(Id, Id)>,
+        link_creation: &LinkCreation,
         nodes_draw_data: &[NodeDrawData],
     ) {
-        // TODO: make this consistent with the Link line stroke, this
-        // will be a problem when Link gets more customization.
-        let line_stroke = Stroke::new(3.0, Color32::TEMPORARY_COLOR);
+        link_creation.draw_shapes(ui, &self.nodes, nodes_draw_data);
+    }
 
-        if let Some((start_node_id, start_parameter_id)) = link_creation_start {
-            let (node, node_draw_data) =
-                Link::get_node(*start_node_id, &self.nodes, nodes_draw_data)
-                    .expect("link creation start has a node id that does not exist");
-            let (_parameter, parameter_draw_data) =
-                Link::get_param(*start_parameter_id, node, node_draw_data)
-                    .expect("link creation start has a parameter id that does not exist");
+    fn calculate_nearest_node<'a>(
+        &'a self,
+        response: &Response,
+        nodes_draw_data: &'a [NodeDrawData],
+    ) -> Option<(f32, &Node, &NodeDrawData)> {
+        let node_interaction_dist_sq = 16.0_f32.powi(2);
 
-            let pos1 = parameter_draw_data.shape_rect.unwrap().center();
-            if let Some(pos2) = ui.input().pointer.hover_pos() {
-                ui.painter().line_segment([pos1, pos2], line_stroke);
-            }
-        }
+        response.hover_pos().and_then(|hover_pos| {
+            self.nodes
+                .iter()
+                .zip(nodes_draw_data.iter())
+                .filter_map(|(node, node_draw_data)| {
+                    let dist_sq = node_draw_data
+                        .background_rect
+                        .unwrap()
+                        .distance_sq_to_pos(hover_pos);
+                    if dist_sq < node_interaction_dist_sq {
+                        Some((dist_sq, node, node_draw_data))
+                    } else {
+                        None
+                    }
+                })
+                .min_by_key(|(dist_sq, _, _)| dist_sq.ord())
+        })
     }
 
     /// Should node graph specific interaction take place?
@@ -1204,132 +1243,123 @@ impl NodeGraph {
         &self,
         ui: &Ui,
         response: &Response,
-        mut selected_nodes: Vec<Id>,
-        mut link_creation_start: Option<(Id, Id)>,
+        selected_nodes: Vec<Id>,
+        link_creation: &mut LinkCreation,
         nodes_draw_data: &[NodeDrawData],
     ) -> InteractionResponse {
-        let node_interaction_dist_sq = 16.0_f32.powi(2);
-
-        let mut add_link = None;
+        let node_data = self.calculate_nearest_node(response, nodes_draw_data);
 
         // non hover dependent interactions
         {
-            // TODO: some of the interactions in the node should not
-            // be part of the node interaction, it should be a
-            // separate thing. eg: link creation, it should be it's
-            // own thing
-
-            let interaction_res = self.nodes.iter().try_for_each(|node| {
-                // this can get confusing, if interaction takes place,
-                // then need to end the for loop Err(contents of the
-                // interaction response) is returned. If no Err is
-                // returned by the try_for_each(), no interaction took
-                // place
-                if let Some(response) =
-                    node.interact_hover_independent(ui, response, &mut link_creation_start)
-                {
-                    Err(response)
-                } else {
-                    Ok(())
+            if LinkCreation::should_interact(ui, response) {
+                if let Some(response) = link_creation.interact_hover_independent(ui, response, ()) {
+                    return InteractionResponse {
+                        selected_nodes,
+                        add_link: response.add_link,
+                        delete_link: None,
+                    };
                 }
-            });
+            }
+            if Self::should_interact(ui, response) {
+                // deselect all the nodes
+                if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
+                    // must ensure no nodes are close enough
+                    if matches!(node_data, None) {
+                        let mut selected_nodes = selected_nodes;
+                        selected_nodes.clear();
 
-            // this is the confusing part, an Err as the result means
-            // that interaction has taken place
-            if let Err(response) = interaction_res {
-                return InteractionResponse {
-                    selected_nodes,
-                    link_creation_start,
-                    add_link: response.add_link,
-                    delete_link: None,
-                };
+                        return InteractionResponse {
+                            selected_nodes,
+                            add_link: None,
+                            delete_link: None,
+                        };
+                    }
+                }
             }
         }
 
         if let Some(hover_pos) = response.hover_pos() {
-            // node graph level interaction also requires node data,
-            // so compute at the same time
-            let node_data = (Self::should_interact(ui, response)
-                || Node::should_interact(ui, response))
-            .then(|| ())
-            .and_then(|_| {
-                self.nodes
-                    .iter()
-                    .zip(nodes_draw_data.iter())
-                    .filter_map(|(node, node_draw_data)| {
-                        let dist_sq = node_draw_data
-                            .background_rect
-                            .unwrap()
-                            .distance_sq_to_pos(hover_pos);
-                        if dist_sq < node_interaction_dist_sq {
-                            Some((dist_sq, node, node_draw_data))
-                        } else {
-                            None
+            if Self::should_interact(ui, response) || LinkCreation::should_interact(ui, response) {
+                if let Some((_node_dist_sq, node, node_draw_data)) = node_data {
+                    // To ensure order of interactions is done correctly,
+                    // it should be the top most layer first, followed in
+                    // order of the layering of the UI elements
+
+                    if LinkCreation::should_interact(ui, response) {
+                        // link creation specific interaction
+
+                        if let Some(response) = link_creation.interact_on_hover(
+                            ui,
+                            response,
+                            hover_pos,
+                            (node, node_draw_data),
+                        ) {
+                            return InteractionResponse {
+                                selected_nodes,
+                                add_link: response.add_link,
+                                delete_link: None,
+                            };
                         }
-                    })
-                    .min_by_key(|(dist_sq, _, _)| dist_sq.ord())
-            });
+                    }
+                    if Self::should_interact(ui, response) {
+                        // node graph specific interaction
 
-            if let Some((_node_dist_sq, node, node_draw_data)) = node_data {
-                // To ensure order of interactions is done correctly,
-                // it should be the top most layer first, followed in
-                // order of the layering of the UI elements
-                #[allow(clippy::collapsible_else_if)]
-                // node specific interaction
-                if let Some(interaction_response) = node.interact_on_hover(
-                    ui,
-                    response,
-                    hover_pos,
-                    (&mut link_creation_start, node_draw_data),
-                ) {
-                    add_link = interaction_response.add_link;
-                }
-                // node graph specific interaction
-                else {
-                    if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none()
-                    {
-                        // select only one node
-                        selected_nodes.clear();
-                        selected_nodes.push(node.id);
-                    } else if response.clicked_by(PointerButton::Primary)
-                        && ui.input().modifiers.shift_only()
-                    {
-                        // add or remove one node from selected node
-                        // list
-                        let selected_node_index = selected_nodes
-                            .iter()
-                            .enumerate()
-                            .find(|(_index, selected_node)| **selected_node == node.id)
-                            .map(|(index, _)| index);
+                        // TODO: need to implement Interactable for
+                        // NodeGraph & SelectedNodes and handle things
+                        // properly that way
 
-                        if let Some(selected_node_index) = selected_node_index {
-                            // if most recently selected node
-                            if selected_node_index == selected_nodes.len() - 1 {
-                                // remove node
-                                selected_nodes.remove(selected_node_index);
-                            } else {
-                                // make this node as most recently selected
-                                let node_id = selected_nodes.remove(selected_node_index);
-                                selected_nodes.push(node_id);
-                            }
-                        } else {
-                            // add node to selected nodes list
+                        if response.clicked_by(PointerButton::Primary)
+                            && ui.input().modifiers.is_none()
+                        {
+                            // select only one node
+                            let mut selected_nodes = selected_nodes;
+                            selected_nodes.clear();
                             selected_nodes.push(node.id);
+
+                            return InteractionResponse {
+                                selected_nodes,
+                                add_link: None,
+                                delete_link: None,
+                            };
+                        } else if response.clicked_by(PointerButton::Primary)
+                            && ui.input().modifiers.shift_only()
+                        {
+                            // add or remove one node from selected node
+                            // list
+                            let selected_node_index = selected_nodes
+                                .iter()
+                                .enumerate()
+                                .find(|(_index, selected_node)| **selected_node == node.id)
+                                .map(|(index, _)| index);
+
+                            let mut selected_nodes = selected_nodes;
+                            if let Some(selected_node_index) = selected_node_index {
+                                // if most recently selected node
+                                if selected_node_index == selected_nodes.len() - 1 {
+                                    // remove node
+                                    selected_nodes.remove(selected_node_index);
+                                } else {
+                                    // make this node as most recently selected
+                                    let node_id = selected_nodes.remove(selected_node_index);
+                                    selected_nodes.push(node_id);
+                                }
+                            } else {
+                                // add node to selected nodes list
+                                selected_nodes.push(node.id);
+                            }
+                            return InteractionResponse {
+                                selected_nodes,
+                                add_link: None,
+                                delete_link: None,
+                            };
                         }
                     }
                 }
-            } else {
-                // deselect all the nodes
-                if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
-                    selected_nodes.clear();
-                }
             }
         }
-
         InteractionResponse {
             selected_nodes,
-            link_creation_start,
-            add_link,
+            add_link: None,
             delete_link: None,
         }
     }
