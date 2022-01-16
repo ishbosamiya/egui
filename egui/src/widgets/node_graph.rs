@@ -9,7 +9,7 @@ use epaint::{
 use crate::{
     layers::ShapeIdx,
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Response, Sense, Ui,
+    Context, CursorIcon, Id, IdMap, InnerResponse, Key, Layout, PointerButton, Response, Sense, Ui,
     WidgetText,
 };
 
@@ -364,6 +364,20 @@ impl Parameter {
     }
 }
 
+struct NodeInteractionResponse {
+    add_link: Option<Link>,
+}
+
+impl NodeInteractionResponse {
+    /// Create new [`Self`] with all responses as [`Option::None`].
+    ///
+    /// Useful to create this when interaction takes place but no
+    /// resulting response is created that must be progagated forward.
+    pub fn no_response_propagation() -> Self {
+        Self { add_link: None }
+    }
+}
+
 enum Selected {
     MostRecent,
     NotMostRecent,
@@ -589,14 +603,72 @@ impl Node {
     ///
     /// The response must cover the entire node graph.
     #[must_use]
-    fn should_interact(_ui: &Ui, response: &Response) -> bool {
-        response.clicked_by(PointerButton::Primary) || response.dragged_by(PointerButton::Primary)
+    fn should_interact(ui: &Ui, response: &Response) -> bool {
+        // link creation start or end
+        response.clicked_by(PointerButton::Primary)
+        // cancel link creation
+        || ui.input().key_pressed(Key::Escape)
     }
 
+    /// Interacts with any parameters and returns [`Option::Some`]
+    /// node interaction response if any interaction took place, the
+    /// internals of [`NodeInteractionResponse`] should still be none.
     #[must_use]
-    fn interact(&self, ui: &Ui, repsonse: &Response, node_draw_data: &NodeDrawData) -> bool {
-        // TODO
-        false
+    fn interact(
+        &self,
+        ui: &Ui,
+        response: &Response,
+        link_creation_start: &mut Option<(Id, Id)>,
+        node_draw_data: &NodeDrawData,
+    ) -> Option<NodeInteractionResponse> {
+        let parameter_interaction_dist_sq = 16.0_f32.powi(2);
+
+        // link creation start or end
+        if response.clicked_by(PointerButton::Primary) {
+            if let Some(hover_pos) = response.hover_pos() {
+                let parameter_data = self
+                    .parameters
+                    .iter()
+                    .zip(node_draw_data.parameters_draw_data.iter())
+                    .filter_map(|(parameter, parameter_draw_data)| {
+                        parameter_draw_data.shape_rect.and_then(|rect| {
+                            let dist_sq = rect.distance_sq_to_pos(hover_pos);
+                            if dist_sq < parameter_interaction_dist_sq {
+                                Some((dist_sq, parameter, parameter_draw_data))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .min_by_key(|(dist_sq, _, _)| dist_sq.ord());
+
+                if let Some((_param_dist_sq, parameter, _parameter_draw_data)) = parameter_data {
+                    // some parameter is interactable
+
+                    if let Some((start_node_id, start_parameter_id)) = link_creation_start.take() {
+                        *link_creation_start = None;
+
+                        return Some(NodeInteractionResponse {
+                            add_link: Some(Link::new(
+                                start_node_id,
+                                start_parameter_id,
+                                self.id,
+                                parameter.id,
+                            )),
+                        });
+                    } else {
+                        *link_creation_start = Some((self.id, parameter.id));
+                        return Some(NodeInteractionResponse::no_response_propagation());
+                    }
+                }
+            }
+        }
+        // cancel link creation
+        else if ui.input().key_pressed(Key::Escape) {
+            *link_creation_start = None;
+            return Some(NodeInteractionResponse::no_response_propagation());
+        }
+        None
     }
 }
 
@@ -1042,6 +1114,11 @@ impl NodeGraph {
     ) -> InteractionResponse {
         let node_interaction_dist_sq = 16.0_f32.powi(2);
 
+        let mut add_link = None;
+
+        // TODO: ideally, any interactions requiring the hover pos
+        // should be kept separate, so 2 different functions that
+        // handle different things
         if let Some(hover_pos) = response.hover_pos() {
             // node graph level interaction also requires node data,
             // so compute at the same time
@@ -1072,7 +1149,10 @@ impl NodeGraph {
                 // order of the layering of the UI elements
                 #[allow(clippy::collapsible_else_if)]
                 // node specific interaction
-                if node.interact(ui, response, node_draw_data) {
+                if let Some(interaction_response) =
+                    node.interact(ui, response, &mut link_creation_start, node_draw_data)
+                {
+                    add_link = interaction_response.add_link;
                 }
                 // node graph specific interaction
                 else {
@@ -1119,7 +1199,7 @@ impl NodeGraph {
         InteractionResponse {
             selected_nodes,
             link_creation_start,
-            add_link: None,
+            add_link,
             delete_link: None,
         }
     }
