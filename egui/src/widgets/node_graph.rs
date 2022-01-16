@@ -59,8 +59,8 @@ impl LinkCreation {
 
 impl<'a> Interactable<'a> for LinkCreation {
     type InteractionResponse = LinkCreationInteractionResponse;
-    type HoverExtraData = (&'a Node, &'a NodeDrawData);
     type NoHoverExtraData = ();
+    type HoverExtraData = (&'a Node, &'a NodeDrawData);
 
     fn should_interact(ui: &Ui, response: &Response) -> bool {
         // link creation start or end
@@ -502,8 +502,8 @@ impl Parameter {
 /// fails to interact, then hover dependent function is called.
 trait Interactable<'a> {
     type InteractionResponse;
-    type HoverExtraData;
     type NoHoverExtraData;
+    type HoverExtraData;
 
     /// Checks if any interaction events have taken place. Only if
     /// true, should [`Self::interact_no_hover()`] and/or
@@ -1059,7 +1059,7 @@ impl NodeGraph {
             selected_nodes,
             add_link,
             delete_link,
-        } = self.interact(
+        } = self.handle_interactions(
             &ui,
             &response,
             selected_nodes,
@@ -1225,25 +1225,12 @@ impl NodeGraph {
         })
     }
 
-    /// Should node graph specific interaction take place?
-    ///
-    /// This does not include the nodes or links or any sub component
-    /// of the node graph. Applies to only events that are global but
-    /// specific to the node graph such as selection of nodes or
-    /// selection of links, etc.
-    fn should_interact(ui: &Ui, response: &Response) -> bool {
-        // selection or deselection of nodes and/or links
-        (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none())
-        // add or remove nodes and/or links from selected list
-        || (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.shift_only())
-    }
-
     #[must_use]
-    fn interact(
-        &self,
+    fn handle_interactions(
+        &mut self,
         ui: &Ui,
         response: &Response,
-        selected_nodes: Vec<Id>,
+        mut selected_nodes: Vec<Id>,
         link_creation: &mut LinkCreation,
         nodes_draw_data: &[NodeDrawData],
     ) -> InteractionResponse {
@@ -1260,31 +1247,15 @@ impl NodeGraph {
                     };
                 }
             }
-            if Self::should_interact(ui, response) {
-                // deselect all the nodes
-                if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
-                    // must ensure no nodes are close enough
-                    if matches!(node_data, None) {
-                        let mut selected_nodes = selected_nodes;
-                        selected_nodes.clear();
-
-                        return InteractionResponse {
-                            selected_nodes,
-                            add_link: None,
-                            delete_link: None,
-                        };
-                    }
-                }
-            }
+            if Self::should_interact(ui, response) {}
         }
 
         if let Some(hover_pos) = response.hover_pos() {
             if Self::should_interact(ui, response) || LinkCreation::should_interact(ui, response) {
+                // To ensure order of interactions is done correctly,
+                // it should be the top most layer first, followed in
+                // order of the layering of the UI elements
                 if let Some((_node_dist_sq, node, node_draw_data)) = node_data {
-                    // To ensure order of interactions is done correctly,
-                    // it should be the top most layer first, followed in
-                    // order of the layering of the UI elements
-
                     if LinkCreation::should_interact(ui, response) {
                         // link creation specific interaction
 
@@ -1301,58 +1272,22 @@ impl NodeGraph {
                             };
                         }
                     }
-                    if Self::should_interact(ui, response) {
-                        // node graph specific interaction
+                }
+                if Self::should_interact(ui, response) {
+                    // node graph specific interaction
 
-                        // TODO: need to implement Interactable for
-                        // NodeGraph & SelectedNodes and handle things
-                        // properly that way
-
-                        if response.clicked_by(PointerButton::Primary)
-                            && ui.input().modifiers.is_none()
-                        {
-                            // select only one node
-                            let mut selected_nodes = selected_nodes;
-                            selected_nodes.clear();
-                            selected_nodes.push(node.id);
-
-                            return InteractionResponse {
-                                selected_nodes,
-                                add_link: None,
-                                delete_link: None,
-                            };
-                        } else if response.clicked_by(PointerButton::Primary)
-                            && ui.input().modifiers.shift_only()
-                        {
-                            // add or remove one node from selected node
-                            // list
-                            let selected_node_index = selected_nodes
-                                .iter()
-                                .enumerate()
-                                .find(|(_index, selected_node)| **selected_node == node.id)
-                                .map(|(index, _)| index);
-
-                            let mut selected_nodes = selected_nodes;
-                            if let Some(selected_node_index) = selected_node_index {
-                                // if most recently selected node
-                                if selected_node_index == selected_nodes.len() - 1 {
-                                    // remove node
-                                    selected_nodes.remove(selected_node_index);
-                                } else {
-                                    // make this node as most recently selected
-                                    let node_id = selected_nodes.remove(selected_node_index);
-                                    selected_nodes.push(node_id);
-                                }
-                            } else {
-                                // add node to selected nodes list
-                                selected_nodes.push(node.id);
-                            }
-                            return InteractionResponse {
-                                selected_nodes,
-                                add_link: None,
-                                delete_link: None,
-                            };
-                        }
+                    let node_id = node_data.map(|(_, node, _)| node.id);
+                    if let Some(_response) = self.interact_on_hover(
+                        ui,
+                        response,
+                        hover_pos,
+                        (&mut selected_nodes, node_id),
+                    ) {
+                        return InteractionResponse {
+                            selected_nodes,
+                            add_link: None,
+                            delete_link: None,
+                        };
                     }
                 }
             }
@@ -1362,5 +1297,101 @@ impl NodeGraph {
             add_link: None,
             delete_link: None,
         }
+    }
+}
+
+struct NodeGraphInteractionResponse {}
+
+impl NodeGraphInteractionResponse {
+    /// Create new [`Self`] with all responses as [`Option::None`].
+    ///
+    /// Useful to create this when interaction takes place but no
+    /// resulting response is created that must be progagated forward.
+    pub fn no_response_propagation() -> Self {
+        Self {}
+    }
+}
+
+impl<'a> Interactable<'a> for NodeGraph {
+    type InteractionResponse = NodeGraphInteractionResponse;
+    // selected_nodes, node_data
+    type NoHoverExtraData = (
+        &'a mut Vec<Id>,
+        &'a Option<(f32, &'a Node, &'a NodeDrawData)>,
+    );
+    // selected_nodes,  node_id
+    type HoverExtraData = (&'a mut Vec<Id>, Option<Id>);
+
+    /// This does not include the nodes or links or any sub component
+    /// of the node graph. Applies to only events that are global but
+    /// specific to the node graph such as selection of nodes or
+    /// selection of links, etc.
+    fn should_interact(ui: &Ui, response: &Response) -> bool {
+        // selection of one node or deselection of all nodes
+        (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none())
+        // add or remove nodes from selected list
+        || (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.shift_only())
+    }
+
+    fn interact_hover_independent(
+        &mut self,
+        ui: &Ui,
+        response: &Response,
+        (selected_nodes, node_data): Self::NoHoverExtraData,
+    ) -> Option<Self::InteractionResponse> {
+        // deselect all the nodes
+        if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
+            // must ensure no nodes are close enough
+            if matches!(node_data, None) {
+                selected_nodes.clear();
+                return Some(NodeGraphInteractionResponse::no_response_propagation());
+            }
+        }
+        None
+    }
+
+    fn interact_on_hover(
+        &mut self,
+        ui: &Ui,
+        response: &Response,
+        _hover_pos: Pos2,
+        (selected_nodes, node_id): Self::HoverExtraData,
+    ) -> Option<Self::InteractionResponse> {
+        // selection of one node or deselection of all nodes
+        if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
+            selected_nodes.clear();
+            if let Some(node_id) = node_id {
+                selected_nodes.push(node_id);
+            }
+            return Some(NodeGraphInteractionResponse::no_response_propagation());
+        }
+        // add or remove nodes from selected list
+        if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.shift_only() {
+            if let Some(node_id) = node_id {
+                let selected_node_index = selected_nodes
+                    .iter()
+                    .enumerate()
+                    .find(|(_index, selected_node)| **selected_node == node_id)
+                    .map(|(index, _)| index);
+
+                if let Some(selected_node_index) = selected_node_index {
+                    // if most recently selected node
+                    if selected_node_index == selected_nodes.len() - 1 {
+                        // remove node
+                        selected_nodes.remove(selected_node_index);
+                    } else {
+                        // make this node as most recently selected
+                        let node_id = selected_nodes.remove(selected_node_index);
+                        selected_nodes.push(node_id);
+                    }
+                } else {
+                    // add node to selected nodes list
+                    selected_nodes.push(node_id);
+                }
+                return Some(NodeGraphInteractionResponse::no_response_propagation());
+            }
+        }
+
+        None
     }
 }
