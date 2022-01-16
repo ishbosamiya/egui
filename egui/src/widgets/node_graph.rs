@@ -9,8 +9,7 @@ use epaint::{
 use crate::{
     layers::ShapeIdx,
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, IdMap, InnerResponse, Key, Layout, PointerButton, Response, Sense, Ui,
-    WidgetText,
+    Context, Id, IdMap, InnerResponse, Key, Layout, PointerButton, Response, Sense, Ui, WidgetText,
 };
 
 struct LinkCreationInteractionResponse {
@@ -939,7 +938,7 @@ impl NodeGraph {
         };
 
         // Allocate the space.
-        let (rect, mut response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+        let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
 
         // Load or initialize the memory.
         let node_graph_id = ui.make_persistent_id(self.id_source);
@@ -1001,46 +1000,9 @@ impl NodeGraph {
                 center_x_axis,
                 center_y_axis,
             );
-
             transform.restore_aspect_ratio(&last_screen_transform);
-
-            // Dragging
-            if response.dragged_by(PointerButton::Middle)
-                || (ui.input().modifiers.alt_only() && response.dragged_by(PointerButton::Primary))
-            {
-                response = response.on_hover_cursor(CursorIcon::Grabbing);
-                transform.translate_bounds(-response.drag_delta());
-            }
-
-            // Zooming
-            if let Some(hover_pos) = response.hover_pos() {
-                let zoom_factor = Vec2::splat(ui.input().zoom_delta());
-                if zoom_factor != Vec2::splat(1.0) {
-                    transform.zoom(zoom_factor, hover_pos);
-                }
-
-                let scroll_delta = ui.input().scroll_delta;
-                if scroll_delta != Vec2::ZERO {
-                    transform.translate_bounds(-scroll_delta);
-                }
-            }
-
             transform
         };
-
-        if !selected_nodes.is_empty()
-            && response.dragged_by(PointerButton::Primary)
-            && ui.input().modifiers.is_none()
-        {
-            for selected_node in selected_nodes.iter() {
-                if let Some(node) = self.nodes.iter_mut().find(|node| node.id == *selected_node) {
-                    node.position += Vec2::new(
-                        response.drag_delta().x * transform.dvalue_dpos()[0] as f32,
-                        response.drag_delta().y * transform.dvalue_dpos()[1] as f32,
-                    );
-                }
-            }
-        }
 
         let mut ui = ui.child_ui(rect, *ui.layout());
 
@@ -1055,6 +1017,7 @@ impl NodeGraph {
             &mut nodes_draw_data,
         );
 
+        let mut transform = transform;
         let InteractionResponse {
             selected_nodes,
             add_link,
@@ -1065,6 +1028,7 @@ impl NodeGraph {
             selected_nodes,
             &mut link_creation,
             &nodes_draw_data,
+            &mut transform,
         );
 
         self.draw_interaction_shapes(&mut ui, &link_creation, &nodes_draw_data);
@@ -1097,9 +1061,6 @@ impl NodeGraph {
     /// must create placeholder shapes, so layering is defined. The
     /// next call to [`Self::draw_shapes()`] draws the rest of the
     /// shapes.
-    ///
-    /// TODO: Elements that can be interacted with must create the
-    /// interactable element at this stage.
     #[must_use]
     fn setup_shapes(
         &mut self,
@@ -1233,6 +1194,7 @@ impl NodeGraph {
         mut selected_nodes: Vec<Id>,
         link_creation: &mut LinkCreation,
         nodes_draw_data: &[NodeDrawData],
+        transform: &mut ScreenTransform,
     ) -> InteractionResponse {
         let node_data = self.calculate_nearest_node(response, nodes_draw_data);
 
@@ -1281,7 +1243,7 @@ impl NodeGraph {
                         ui,
                         response,
                         hover_pos,
-                        (&mut selected_nodes, node_id),
+                        (&mut selected_nodes, node_id, transform),
                     ) {
                         return InteractionResponse {
                             selected_nodes,
@@ -1319,8 +1281,8 @@ impl<'a> Interactable<'a> for NodeGraph {
         &'a mut Vec<Id>,
         &'a Option<(f32, &'a Node, &'a NodeDrawData)>,
     );
-    // selected_nodes,  node_id
-    type HoverExtraData = (&'a mut Vec<Id>, Option<Id>);
+    // selected_nodes, node_id, transform
+    type HoverExtraData = (&'a mut Vec<Id>, Option<Id>, &'a mut ScreenTransform);
 
     /// This does not include the nodes or links or any sub component
     /// of the node graph. Applies to only events that are global but
@@ -1330,7 +1292,17 @@ impl<'a> Interactable<'a> for NodeGraph {
         // selection of one node or deselection of all nodes
         (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none())
         // add or remove nodes from selected list
-        || (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.shift_only())
+            || (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.shift_only())
+        // node graph translation
+            || (response.dragged_by(PointerButton::Middle)
+                || (ui.input().modifiers.alt_only()
+                    && response.dragged_by(PointerButton::Primary)))
+        // node graph zooming
+            || (ui.input().zoom_delta() != 1.0)
+        // node graph scrolling
+            || (ui.input().scroll_delta != Vec2::ZERO)
+        // translate selected nodes
+            || response.dragged_by(PointerButton::Primary) && ui.input().modifiers.is_none()
     }
 
     fn interact_hover_independent(
@@ -1354,8 +1326,8 @@ impl<'a> Interactable<'a> for NodeGraph {
         &mut self,
         ui: &Ui,
         response: &Response,
-        _hover_pos: Pos2,
-        (selected_nodes, node_id): Self::HoverExtraData,
+        hover_pos: Pos2,
+        (selected_nodes, node_id, transform): Self::HoverExtraData,
     ) -> Option<Self::InteractionResponse> {
         // selection of one node or deselection of all nodes
         if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
@@ -1390,6 +1362,35 @@ impl<'a> Interactable<'a> for NodeGraph {
                 }
                 return Some(NodeGraphInteractionResponse::no_response_propagation());
             }
+        }
+        // translate selected nodes
+        if response.dragged_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
+            for selected_node in selected_nodes.iter() {
+                if let Some(node) = self.nodes.iter_mut().find(|node| node.id == *selected_node) {
+                    node.position += Vec2::new(
+                        response.drag_delta().x * transform.dvalue_dpos()[0] as f32,
+                        response.drag_delta().y * transform.dvalue_dpos()[1] as f32,
+                    );
+                }
+            }
+        }
+        // node graph translation
+        if response.dragged_by(PointerButton::Middle)
+            || (ui.input().modifiers.alt_only() && response.dragged_by(PointerButton::Primary))
+        {
+            // TODO: need to change the cursor icon
+            transform.translate_bounds(-response.drag_delta());
+            return Some(NodeGraphInteractionResponse::no_response_propagation());
+        }
+        // node graph zooming
+        if ui.input().zoom_delta() != 1.0 {
+            transform.zoom(Vec2::splat(ui.input().zoom_delta()), hover_pos);
+            return Some(NodeGraphInteractionResponse::no_response_propagation());
+        }
+        // node graph scrolling
+        if ui.input().scroll_delta != Vec2::ZERO {
+            transform.translate_bounds(-ui.input().scroll_delta);
+            return Some(NodeGraphInteractionResponse::no_response_propagation());
         }
 
         None
