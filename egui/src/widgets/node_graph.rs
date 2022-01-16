@@ -2,13 +2,15 @@ use std::hash::Hash;
 
 use epaint::{
     emath::{Align2, NumExt},
+    util::FloatOrd,
     CircleShape, Color32, Pos2, Rect, Shape, Stroke, TextStyle, Vec2,
 };
 
 use crate::{
     layers::ShapeIdx,
     plot::transform::{PlotBounds, ScreenTransform},
-    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Sense, Ui, WidgetText,
+    Context, CursorIcon, Id, IdMap, InnerResponse, Layout, PointerButton, Response, Sense, Ui,
+    WidgetText,
 };
 
 struct LinkShapeIdx {
@@ -36,6 +38,7 @@ impl Link {
         }
     }
 
+    #[must_use]
     fn setup_shapes(ui: &mut Ui) -> LinkDrawData {
         let shape_idx = ui.painter().add(Shape::Noop);
 
@@ -113,6 +116,7 @@ impl Default for ParameterShape {
 }
 
 impl ParameterShape {
+    #[must_use]
     pub fn get_shape(
         &self,
         center: Pos2,
@@ -168,6 +172,7 @@ impl ParameterShape {
         }
     }
 
+    #[must_use]
     pub fn get_num_shapes(&self) -> usize {
         match self {
             ParameterShape::Circle | ParameterShape::Diamond | ParameterShape::Square => 1,
@@ -258,6 +263,7 @@ impl Parameter {
         self
     }
 
+    #[must_use]
     fn setup_shapes(&mut self, ui: &mut Ui, node_width: f32) -> ParameterDrawData {
         let shape_idxs = if !matches!(self.param_type, ParameterType::NoLink) {
             Some(
@@ -371,6 +377,7 @@ struct NodeShapeIdx {
 }
 
 struct NodeDrawData {
+    background_rect: Option<Rect>,
     parameters_draw_data: Vec<ParameterDrawData>,
 
     node_shape_idx: NodeShapeIdx,
@@ -426,6 +433,7 @@ impl Node {
         self
     }
 
+    #[must_use]
     fn setup_shapes(&mut self, ui: &mut Ui, transform: &ScreenTransform) -> NodeDrawData {
         let node_position = transform.transformed_pos(&self.position);
         let mut ui = ui.child_ui(
@@ -444,6 +452,7 @@ impl Node {
             .collect();
 
         NodeDrawData {
+            background_rect: None,
             parameters_draw_data,
             node_shape_idx: NodeShapeIdx {
                 background_border_idx,
@@ -454,6 +463,7 @@ impl Node {
         }
     }
 
+    #[must_use]
     fn calculate_total_parameters_rect(&self, node_draw_data: &NodeDrawData) -> Rect {
         self.parameters
             .iter()
@@ -570,7 +580,38 @@ impl Node {
             node_draw_data.node_shape_idx.background_idx,
             Shape::rect_filled(background_rect, background_corner_radius, background_color),
         );
+
+        node_draw_data.background_rect = Some(background_rect);
     }
+
+    /// Checks if any interaction events have taken place. Only if
+    /// true, should [`Self::interact()`] be called.
+    ///
+    /// The response must cover the entire node graph.
+    #[must_use]
+    fn should_interact(_ui: &Ui, response: &Response) -> bool {
+        response.clicked_by(PointerButton::Primary) || response.dragged_by(PointerButton::Primary)
+    }
+
+    #[must_use]
+    fn interact(&self, ui: &Ui, repsonse: &Response, node_draw_data: &NodeDrawData) -> bool {
+        // TODO
+        false
+    }
+}
+
+struct InteractionResponse {
+    /// Currently selected nodes
+    selected_nodes: Vec<Id>,
+    /// New link creation. Is [`Option::Some`] if a new link creation
+    /// is in progress with a tuple of NodeId and ParameterId
+    link_creation_start: Option<(Id, Id)>,
+    /// Is [`Option::Some`] if a new link is created along with the
+    /// link.
+    add_link: Option<Link>,
+    /// Is [`Option::Some`] if a link is deleted along with the index
+    /// of the deleted link in the links list.
+    delete_link: Option<usize>,
 }
 
 /// Information about the node that has to persist between frames.
@@ -596,6 +637,9 @@ struct NodeGraphMemory {
     /// List of nodes that are currently selected, with selection
     /// order going from left to right as least recent to most recent.
     selected_nodes: Vec<Id>,
+    /// If [`Option::Some`], a new link is currently being created
+    /// which contains the source's node id and parameter id.
+    link_creation_start: Option<(Id, Id)>,
 }
 
 impl NodeGraphMemory {
@@ -627,8 +671,8 @@ pub struct NodeGraph {
 }
 
 pub struct NodeGraphResponse<R> {
-    pub added_link: Option<Link>,
-    pub deleted_link: Option<usize>,
+    pub add_link: Option<Link>,
+    pub delete_link: Option<usize>,
 
     pub inner_response: InnerResponse<R>,
 }
@@ -691,6 +735,7 @@ impl NodeGraph {
         self
     }
 
+    #[must_use]
     pub fn show<R>(
         mut self,
         ui: &mut Ui,
@@ -750,12 +795,14 @@ impl NodeGraph {
                     .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                     .collect(),
                 selected_nodes: Vec::new(),
+                link_creation_start: None,
             });
 
         let NodeGraphMemory {
             last_screen_transform,
             selected_nodes,
             node_data,
+            link_creation_start,
         } = memory;
 
         // reorder nodes based selection history
@@ -841,6 +888,19 @@ impl NodeGraph {
             &mut nodes_draw_data,
         );
 
+        let InteractionResponse {
+            selected_nodes,
+            link_creation_start,
+            add_link,
+            delete_link,
+        } = self.interact(
+            &ui,
+            &response,
+            selected_nodes,
+            link_creation_start,
+            &nodes_draw_data,
+        );
+
         let inner = add_contents(&mut ui);
 
         let memory = NodeGraphMemory {
@@ -851,12 +911,13 @@ impl NodeGraph {
                 .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                 .collect(),
             selected_nodes,
+            link_creation_start,
         };
         memory.store(ui.ctx(), node_graph_id);
 
         NodeGraphResponse {
-            added_link: None,
-            deleted_link: None,
+            add_link,
+            delete_link,
             inner_response: InnerResponse::new(inner, response),
         }
     }
@@ -871,6 +932,7 @@ impl NodeGraph {
     ///
     /// TODO: Elements that can be interacted with must create the
     /// interactable element at this stage.
+    #[must_use]
     fn setup_shapes(
         &mut self,
         ui: &mut Ui,
@@ -954,5 +1016,111 @@ impl NodeGraph {
             .for_each(|(link, link_draw_data)| {
                 link.draw_shapes(ui, link_draw_data, &self.nodes, nodes_draw_data);
             });
+    }
+
+    /// Should node graph specific interaction take place?
+    ///
+    /// This does not include the nodes or links or any sub component
+    /// of the node graph. Applies to only events that are global but
+    /// specific to the node graph such as selection of nodes or
+    /// selection of links, etc.
+    fn should_interact(ui: &Ui, response: &Response) -> bool {
+        // selection or deselection of nodes and/or links
+        (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none())
+        // add or remove nodes and/or links from selected list
+        || (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.shift_only())
+    }
+
+    #[must_use]
+    fn interact(
+        &self,
+        ui: &Ui,
+        response: &Response,
+        mut selected_nodes: Vec<Id>,
+        mut link_creation_start: Option<(Id, Id)>,
+        nodes_draw_data: &[NodeDrawData],
+    ) -> InteractionResponse {
+        let node_interaction_dist_sq = 16.0_f32.powi(2);
+
+        if let Some(hover_pos) = response.hover_pos() {
+            // node graph level interaction also requires node data,
+            // so compute at the same time
+            let node_data = (Self::should_interact(ui, response)
+                || Node::should_interact(ui, response))
+            .then(|| ())
+            .and_then(|_| {
+                self.nodes
+                    .iter()
+                    .zip(nodes_draw_data.iter())
+                    .filter_map(|(node, node_draw_data)| {
+                        let dist_sq = node_draw_data
+                            .background_rect
+                            .unwrap()
+                            .distance_sq_to_pos(hover_pos);
+                        if dist_sq < node_interaction_dist_sq {
+                            Some((dist_sq, node, node_draw_data))
+                        } else {
+                            None
+                        }
+                    })
+                    .min_by_key(|(dist_sq, _, _)| dist_sq.ord())
+            });
+
+            if let Some((_node_dist_sq, node, node_draw_data)) = node_data {
+                // To ensure order of interactions is done correctly,
+                // it should be the top most layer first, followed in
+                // order of the layering of the UI elements
+                #[allow(clippy::collapsible_else_if)]
+                // node specific interaction
+                if node.interact(ui, response, node_draw_data) {
+                }
+                // node graph specific interaction
+                else {
+                    if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none()
+                    {
+                        // select only one node
+                        selected_nodes.clear();
+                        selected_nodes.push(node.id);
+                    } else if response.clicked_by(PointerButton::Primary)
+                        && ui.input().modifiers.shift_only()
+                    {
+                        // add or remove one node from selected node
+                        // list
+                        let selected_node_index = selected_nodes
+                            .iter()
+                            .enumerate()
+                            .find(|(_index, selected_node)| **selected_node == node.id)
+                            .map(|(index, _)| index);
+
+                        if let Some(selected_node_index) = selected_node_index {
+                            // if most recently selected node
+                            if selected_node_index == selected_nodes.len() - 1 {
+                                // remove node
+                                selected_nodes.remove(selected_node_index);
+                            } else {
+                                // make this node as most recently selected
+                                let node_id = selected_nodes.remove(selected_node_index);
+                                selected_nodes.push(node_id);
+                            }
+                        } else {
+                            // add node to selected nodes list
+                            selected_nodes.push(node.id);
+                        }
+                    }
+                }
+            } else {
+                // deselect all the nodes
+                if response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
+                    selected_nodes.clear();
+                }
+            }
+        }
+
+        InteractionResponse {
+            selected_nodes,
+            link_creation_start,
+            add_link: None,
+            delete_link: None,
+        }
     }
 }
