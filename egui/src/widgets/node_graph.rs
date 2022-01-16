@@ -973,6 +973,8 @@ impl NodeGraph {
             &nodes_draw_data,
         );
 
+        self.draw_interaction_shapes(&mut ui, &link_creation_start, &nodes_draw_data);
+
         let inner = add_contents(&mut ui);
 
         let memory = NodeGraphMemory {
@@ -1088,6 +1090,35 @@ impl NodeGraph {
             .for_each(|(link, link_draw_data)| {
                 link.draw_shapes(ui, link_draw_data, &self.nodes, nodes_draw_data);
             });
+    }
+
+    /// Draw the shapes necessary to indicate some interaction. Unless
+    /// some interaction is expected and setup by
+    /// [`Self::setup_shapes`], this pass will always be painted over
+    /// all other shapes.
+    fn draw_interaction_shapes(
+        &self,
+        ui: &mut Ui,
+        link_creation_start: &Option<(Id, Id)>,
+        nodes_draw_data: &[NodeDrawData],
+    ) {
+        // TODO: make this consistent with the Link line stroke, this
+        // will be a problem when Link gets more customization.
+        let line_stroke = Stroke::new(3.0, Color32::TEMPORARY_COLOR);
+
+        if let Some((start_node_id, start_parameter_id)) = link_creation_start {
+            let (node, node_draw_data) =
+                Link::get_node(*start_node_id, &self.nodes, nodes_draw_data)
+                    .expect("link creation start has a node id that does not exist");
+            let (_parameter, parameter_draw_data) =
+                Link::get_param(*start_parameter_id, node, node_draw_data)
+                    .expect("link creation start has a parameter id that does not exist");
+
+            let pos1 = parameter_draw_data.shape_rect.unwrap().center();
+            if let Some(pos2) = ui.input().pointer.hover_pos() {
+                ui.painter().line_segment([pos1, pos2], line_stroke);
+            }
+        }
     }
 
     /// Should node graph specific interaction take place?
