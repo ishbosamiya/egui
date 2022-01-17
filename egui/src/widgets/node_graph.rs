@@ -252,19 +252,45 @@ impl Link {
         &self,
         ui: &mut Ui,
         link_draw_data: &mut LinkDrawData,
+        selected: &Option<Selected>,
         nodes: &[Node],
         nodes_draw_data: &[NodeDrawData],
     ) {
-        let line_stroke = Stroke::new(3.0, Color32::TEMPORARY_COLOR);
+        let line_width = 3.0;
+        let line_stroke = Stroke::new(line_width, Color32::TEMPORARY_COLOR);
+        let selection_line_stroke = Stroke::new(
+            line_width + (2.0 * ui.style().visuals.selection.stroke.width),
+            selected
+                .as_ref()
+                .map_or(
+                    ui.style().visuals.selection.stroke.color,
+                    |selected| match selected {
+                        Selected::MostRecent => ui.style().visuals.selection.stroke.color,
+                        Selected::NotMostRecent => Color32::from_rgb(188, 67, 6),
+                    },
+                ),
+        );
 
         let line = self.get_line(nodes, nodes_draw_data);
         let (p1, p2) = (line.p1, line.p2);
         link_draw_data.line = Some(line);
 
-        ui.painter().set(
-            link_draw_data.shape_idx.shape_idx,
-            Shape::line_segment([p1, p2], line_stroke),
-        );
+        if selected.is_some() {
+            ui.painter().set(
+                link_draw_data.shape_idx.shape_idx,
+                // TODO: introduce a Shape::Noop for the selection
+                // border shape, using Shape::Vec is not recommended.
+                Shape::Vec(vec![
+                    Shape::line_segment([p1, p2], selection_line_stroke),
+                    Shape::line_segment([p1, p2], line_stroke),
+                ]),
+            );
+        } else {
+            ui.painter().set(
+                link_draw_data.shape_idx.shape_idx,
+                Shape::line_segment([p1, p2], line_stroke),
+            );
+        }
     }
 }
 
@@ -1058,6 +1084,7 @@ impl NodeGraph {
         self.draw_shapes(
             &mut ui,
             &selected_nodes,
+            &selected_links,
             &transform,
             links,
             &mut links_draw_data,
@@ -1151,10 +1178,12 @@ impl NodeGraph {
     }
 
     /// Draws the final shapes and updates any missing draw data.
+    #[allow(clippy::too_many_arguments)]
     fn draw_shapes(
         &self,
         ui: &mut Ui,
         selected_nodes: &[Id],
+        selected_links: &[Id],
         transform: &ScreenTransform,
         links: &[Link],
         links_draw_data: &mut [LinkDrawData],
@@ -1195,7 +1224,22 @@ impl NodeGraph {
             .iter()
             .zip(links_draw_data.iter_mut())
             .for_each(|(link, link_draw_data)| {
-                link.draw_shapes(ui, link_draw_data, &self.nodes, nodes_draw_data);
+                link.draw_shapes(
+                    ui,
+                    link_draw_data,
+                    &selected_links
+                        .iter()
+                        .find(|selected_link| **selected_link == link.id)
+                        .map(|selected_link| {
+                            if selected_link == selected_links.last().unwrap() {
+                                Selected::MostRecent
+                            } else {
+                                Selected::NotMostRecent
+                            }
+                        }),
+                    &self.nodes,
+                    nodes_draw_data,
+                );
             });
     }
 
