@@ -197,6 +197,10 @@ impl Link {
         }
     }
 
+    pub fn get_id(&self) -> Id {
+        self.id
+    }
+
     #[must_use]
     fn setup_shapes(ui: &mut Ui) -> LinkDrawData {
         let shape_idx = ui.painter().add(Shape::Noop);
@@ -843,9 +847,12 @@ struct InteractionResponse {
     /// Is [`Option::Some`] if a new link is created along with the
     /// link.
     add_link: Option<Link>,
-    /// Is [`Option::Some`] if a link is deleted along with the index
-    /// of the deleted link in the links list.
-    delete_link: Option<usize>,
+    /// Is [`Option::Some`] if nodes must be deleted along with the
+    /// ids of those nodes that must be deleted.
+    delete_nodes: Option<Vec<Id>>,
+    /// Is [`Option::Some`] if links must be deleted along with the
+    /// ids of those links that must be deleted.
+    delete_links: Option<Vec<Id>>,
 }
 
 /// Information about the node that has to persist between frames.
@@ -907,8 +914,10 @@ pub struct NodeGraph {
 }
 
 pub struct NodeGraphResponse<R> {
+    pub delete_nodes: Option<Vec<Id>>,
+
     pub add_link: Option<Link>,
-    pub delete_link: Option<usize>,
+    pub delete_links: Option<Vec<Id>>,
 
     pub inner_response: InnerResponse<R>,
 }
@@ -1096,7 +1105,8 @@ impl NodeGraph {
             selected_nodes,
             selected_links,
             add_link,
-            delete_link,
+            delete_links,
+            delete_nodes,
         } = self.handle_interactions(
             &ui,
             &response,
@@ -1127,8 +1137,9 @@ impl NodeGraph {
         memory.store(ui.ctx(), node_graph_id);
 
         NodeGraphResponse {
+            delete_nodes,
             add_link,
-            delete_link,
+            delete_links,
             inner_response: InnerResponse::new(inner, response),
         }
     }
@@ -1346,12 +1357,13 @@ impl NodeGraph {
                         selected_nodes,
                         selected_links,
                         add_link: response.add_link,
-                        delete_link: None,
+                        delete_nodes: None,
+                        delete_links: None,
                     };
                 }
             }
             if Self::should_interact(ui, response) {
-                if let Some(_response) = self.interact_hover_independent(
+                if let Some(response) = self.interact_hover_independent(
                     ui,
                     response,
                     NodeGraphNoHoverData::new(
@@ -1365,7 +1377,8 @@ impl NodeGraph {
                         selected_nodes,
                         selected_links,
                         add_link: None,
-                        delete_link: None,
+                        delete_nodes: response.delete_nodes,
+                        delete_links: response.delete_links,
                     };
                 }
             }
@@ -1392,7 +1405,8 @@ impl NodeGraph {
                                 selected_nodes,
                                 selected_links,
                                 add_link: response.add_link,
-                                delete_link: None,
+                                delete_nodes: None,
+                                delete_links: None,
                             };
                         }
                     }
@@ -1416,7 +1430,8 @@ impl NodeGraph {
                             selected_nodes,
                             selected_links,
                             add_link: None,
-                            delete_link: None,
+                            delete_nodes: None,
+                            delete_links: None,
                         };
                     }
                 }
@@ -1426,12 +1441,16 @@ impl NodeGraph {
             selected_nodes,
             selected_links,
             add_link: None,
-            delete_link: None,
+            delete_nodes: None,
+            delete_links: None,
         }
     }
 }
 
-struct NodeGraphInteractionResponse {}
+struct NodeGraphInteractionResponse {
+    delete_nodes: Option<Vec<Id>>,
+    delete_links: Option<Vec<Id>>,
+}
 
 impl NodeGraphInteractionResponse {
     /// Create new [`Self`] with all responses as [`Option::None`].
@@ -1439,7 +1458,17 @@ impl NodeGraphInteractionResponse {
     /// Useful to create this when interaction takes place but no
     /// resulting response is created that must be progagated forward.
     pub fn no_response_propagation() -> Self {
-        Self {}
+        Self {
+            delete_nodes: None,
+            delete_links: None,
+        }
+    }
+
+    pub fn new(delete_nodes: Option<Vec<Id>>, delete_links: Option<Vec<Id>>) -> Self {
+        Self {
+            delete_nodes,
+            delete_links,
+        }
     }
 }
 
@@ -1520,6 +1549,8 @@ impl<'a> Interactable<'a> for NodeGraph {
             || (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.is_none())
         // add or remove links from selected list
             || (response.clicked_by(PointerButton::Primary) && ui.input().modifiers.shift_only())
+        // delete selected nodes and links
+            || (ui.input().key_pressed(Key::Delete) && ui.input().modifiers.is_none())
         // node graph translation
             || (response.dragged_by(PointerButton::Middle)
                 || (ui.input().modifiers.alt_only()
@@ -1551,6 +1582,27 @@ impl<'a> Interactable<'a> for NodeGraph {
                 selected_links.clear();
                 return Some(NodeGraphInteractionResponse::no_response_propagation());
             }
+        }
+        // delete selected nodes and links
+        if ui.input().key_pressed(Key::Delete) && ui.input().modifiers.is_none() {
+            let delete_nodes = if selected_nodes.is_empty() {
+                None
+            } else {
+                let mut delete_nodes = Vec::new();
+                delete_nodes.append(selected_nodes);
+                Some(delete_nodes)
+            };
+            let delete_links = if selected_links.is_empty() {
+                None
+            } else {
+                let mut delete_links = Vec::new();
+                delete_links.append(selected_links);
+                Some(delete_links)
+            };
+            return Some(NodeGraphInteractionResponse::new(
+                delete_nodes,
+                delete_links,
+            ));
         }
         None
     }
