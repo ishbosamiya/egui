@@ -908,8 +908,6 @@ pub struct NodeGraph {
     height: Option<f32>,
     /// Width / height ratio of the node graph region
     view_aspect: Option<f32>,
-
-    nodes: Vec<Node>,
 }
 
 pub struct NodeGraphResponse<R> {
@@ -932,8 +930,6 @@ impl NodeGraph {
             width: None,
             height: None,
             view_aspect: None,
-
-            nodes: Vec::new(),
         }
     }
 
@@ -974,15 +970,11 @@ impl NodeGraph {
         self
     }
 
-    pub fn node(mut self, node: Node) -> Self {
-        self.nodes.push(node);
-        self
-    }
-
     #[must_use]
     pub fn show<R>(
         mut self,
         ui: &mut Ui,
+        mut nodes: Vec<Node>,
         links: &[Link],
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> NodeGraphResponse<R> {
@@ -1033,8 +1025,7 @@ impl NodeGraph {
                     transform.set_aspect(1.0);
                     transform
                 },
-                node_data: self
-                    .nodes
+                node_data: nodes
                     .iter()
                     .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                     .collect(),
@@ -1052,7 +1043,7 @@ impl NodeGraph {
         } = memory;
 
         // reorder nodes based selection history
-        self.nodes.sort_by_key(|node| {
+        nodes.sort_by_key(|node| {
             selected_nodes
                 .iter()
                 .enumerate()
@@ -1067,11 +1058,11 @@ impl NodeGraph {
         });
 
         // force nodes to their respective positions
-        self.nodes.iter_mut().for_each(|node| {
+        for node in nodes.iter_mut() {
             if let Some(data) = node_data.get(&node.id) {
                 node.position = data.position;
             }
-        });
+        }
 
         let transform = {
             let mut transform = ScreenTransform::new(
@@ -1087,16 +1078,17 @@ impl NodeGraph {
         let mut ui = ui.child_ui(rect, *ui.layout());
 
         let (mut links_draw_data, mut nodes_draw_data) =
-            self.setup_shapes(&mut ui, links, &transform);
+            self.setup_shapes(&mut ui, &mut nodes, links, &transform);
 
-        self.draw_shapes(
+        Self::draw_shapes(
             &mut ui,
             &selected_nodes,
             &selected_links,
             &transform,
+            &nodes,
+            &mut nodes_draw_data,
             links,
             &mut links_draw_data,
-            &mut nodes_draw_data,
         );
 
         let mut transform = transform;
@@ -1112,20 +1104,20 @@ impl NodeGraph {
             selected_nodes,
             selected_links,
             &mut link_creation,
+            &mut nodes,
             &nodes_draw_data,
             links,
             &links_draw_data,
             &mut transform,
         );
 
-        self.draw_interaction_shapes(&mut ui, &link_creation, &nodes_draw_data);
+        Self::draw_interaction_shapes(&mut ui, &link_creation, &nodes, &nodes_draw_data);
 
         let inner = add_contents(&mut ui);
 
         let memory = NodeGraphMemory {
             last_screen_transform: transform,
-            node_data: self
-                .nodes
+            node_data: nodes
                 .iter()
                 .map(|node| (node.id, NodeMemory::new(node.position, node.width)))
                 .collect(),
@@ -1154,6 +1146,7 @@ impl NodeGraph {
     fn setup_shapes(
         &mut self,
         ui: &mut Ui,
+        nodes: &mut [Node],
         links: &[Link],
         transform: &ScreenTransform,
     ) -> (Vec<LinkDrawData>, Vec<NodeDrawData>) {
@@ -1178,8 +1171,7 @@ impl NodeGraph {
         let links_draw_data = links.iter().map(|_link| Link::setup_shapes(ui)).collect();
 
         // nodes
-        let nodes_draw_data = self
-            .nodes
+        let nodes_draw_data = nodes
             .iter_mut()
             .map(|node| node.setup_shapes(ui, transform))
             .collect();
@@ -1190,14 +1182,14 @@ impl NodeGraph {
     /// Draws the final shapes and updates any missing draw data.
     #[allow(clippy::too_many_arguments)]
     fn draw_shapes(
-        &self,
         ui: &mut Ui,
         selected_nodes: &[Id],
         selected_links: &[Id],
         transform: &ScreenTransform,
+        nodes: &[Node],
+        nodes_draw_data: &mut [NodeDrawData],
         links: &[Link],
         links_draw_data: &mut [LinkDrawData],
-        nodes_draw_data: &mut [NodeDrawData],
     ) {
         // order in which the elements are drawn now does not matter
         // since the layering part is already done in the first pass
@@ -1207,8 +1199,8 @@ impl NodeGraph {
 
         // nodes must be drawn before links since the parameter shape
         // rects need to be setup in the NodeDrawData
-        debug_assert_eq!(self.nodes.len(), nodes_draw_data.len());
-        self.nodes
+        debug_assert_eq!(nodes.len(), nodes_draw_data.len());
+        nodes
             .iter()
             .zip(nodes_draw_data.iter_mut())
             .for_each(|(node, node_draw_data)| {
@@ -1247,7 +1239,7 @@ impl NodeGraph {
                                 Selected::NotMostRecent
                             }
                         }),
-                    &self.nodes,
+                    nodes,
                     nodes_draw_data,
                 );
             });
@@ -1258,26 +1250,26 @@ impl NodeGraph {
     /// [`Self::setup_shapes`], this pass will always be painted over
     /// all other shapes.
     fn draw_interaction_shapes(
-        &self,
         ui: &mut Ui,
         link_creation: &LinkCreation,
+        nodes: &[Node],
         nodes_draw_data: &[NodeDrawData],
     ) {
-        link_creation.draw_shapes(ui, &self.nodes, nodes_draw_data);
+        link_creation.draw_shapes(ui, nodes, nodes_draw_data);
     }
 
     /// Calculate the nearest node within the interaction distance to
     /// the hover position and if there is a node, return the index of
     /// the node along with the distance squared
     fn calculate_nearest_node(
-        &self,
         response: &Response,
+        nodes: &[Node],
         nodes_draw_data: &[NodeDrawData],
     ) -> Option<(usize, f32)> {
         let node_interaction_dist_sq = 16.0_f32.powi(2);
 
         response.hover_pos().and_then(|hover_pos| {
-            self.nodes
+            nodes
                 .iter()
                 .zip(nodes_draw_data.iter())
                 .enumerate()
@@ -1338,14 +1330,15 @@ impl NodeGraph {
         mut selected_nodes: Vec<Id>,
         mut selected_links: Vec<Id>,
         link_creation: &mut LinkCreation,
+        nodes: &mut [Node],
         nodes_draw_data: &[NodeDrawData],
         links: &[Link],
         links_draw_data: &[LinkDrawData],
         transform: &mut ScreenTransform,
     ) -> InteractionResponse {
-        let node_data = self.calculate_nearest_node(response, nodes_draw_data);
+        let node_data = Self::calculate_nearest_node(response, nodes, nodes_draw_data);
         let link_data = Self::calculate_nearest_link(response, links, links_draw_data);
-        let node_id = node_data.map(|(index, _)| self.nodes[index].id);
+        let node_id = node_data.map(|(index, _)| nodes[index].id);
         let link_id = link_data.map(|(index, _)| links[index].id);
 
         // non hover dependent interactions
@@ -1392,7 +1385,7 @@ impl NodeGraph {
                     if LinkCreation::should_interact(ui, response) {
                         // link creation specific interaction
 
-                        let node = &self.nodes[node_index];
+                        let node = &nodes[node_index];
                         let node_draw_data = &nodes_draw_data[node_index];
                         if let Some(response) = link_creation.interact_on_hover(
                             ui,
@@ -1418,6 +1411,7 @@ impl NodeGraph {
                         response,
                         hover_pos,
                         NodeGraphHoverData::new(
+                            nodes,
                             &mut selected_nodes,
                             &mut selected_links,
                             node_id,
@@ -1499,6 +1493,7 @@ impl<'a> NodeGraphNoHoverData<'a> {
 }
 
 struct NodeGraphHoverData<'a> {
+    nodes: &'a mut [Node],
     selected_nodes: &'a mut Vec<Id>,
     selected_links: &'a mut Vec<Id>,
     /// If a node exists within the interaction distance, must be
@@ -1512,6 +1507,7 @@ struct NodeGraphHoverData<'a> {
 
 impl<'a> NodeGraphHoverData<'a> {
     pub fn new(
+        nodes: &'a mut [Node],
         selected_nodes: &'a mut Vec<Id>,
         selected_links: &'a mut Vec<Id>,
         node_id: Option<Id>,
@@ -1519,6 +1515,7 @@ impl<'a> NodeGraphHoverData<'a> {
         transform: &'a mut ScreenTransform,
     ) -> Self {
         Self {
+            nodes,
             selected_nodes,
             selected_links,
             node_id,
@@ -1612,6 +1609,7 @@ impl<'a> Interactable<'a> for NodeGraph {
         response: &Response,
         hover_pos: Pos2,
         NodeGraphHoverData {
+            nodes,
             selected_nodes,
             selected_links,
             node_id,
@@ -1692,8 +1690,7 @@ impl<'a> Interactable<'a> for NodeGraph {
         if response.dragged_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
             if !selected_nodes.is_empty() {
                 for selected_node in selected_nodes.iter() {
-                    if let Some(node) = self.nodes.iter_mut().find(|node| node.id == *selected_node)
-                    {
+                    if let Some(node) = nodes.iter_mut().find(|node| node.id == *selected_node) {
                         node.position += Vec2::new(
                             response.drag_delta().x * transform.dvalue_dpos()[0] as f32,
                             response.drag_delta().y * transform.dvalue_dpos()[1] as f32,
