@@ -454,10 +454,9 @@ impl Parameter {
         self
     }
 
-    // TODO: make it show that the user does not have to add the
-    // explicit box around the add_contents function/closure
-    pub fn show(mut self, add_contents: Box<dyn FnOnce(&mut Ui)>) -> Self {
-        self.add_contents = Some(add_contents);
+    // TODO: borrow add_contents for non static lifetime
+    pub fn show(mut self, add_contents: impl FnOnce(&mut Ui) + 'static) -> Self {
+        self.add_contents = Some(Box::new(add_contents));
         self
     }
 
