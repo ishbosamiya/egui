@@ -666,8 +666,8 @@ impl Node {
         }
     }
 
-    pub fn id(mut self, id_source: impl Hash) -> Self {
-        self.id = Id::new(id_source);
+    pub fn id(mut self, id: Id) -> Self {
+        self.id = id;
         self
     }
 
