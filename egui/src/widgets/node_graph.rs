@@ -59,7 +59,7 @@ impl LinkCreation {
         Self { start_ids: None }
     }
 
-    pub fn draw_shapes(&self, ui: &mut Ui, nodes: &[Node], nodes_draw_data: &[NodeDrawData]) {
+    pub fn draw_shapes(&self, ui: &mut Ui, nodes: &[Node<'_>], nodes_draw_data: &[NodeDrawData]) {
         // TODO: need to decide if this should be dependent on the input color
         let line_stroke = Stroke::new(3.0, Color32::WHITE);
 
@@ -78,10 +78,10 @@ impl LinkCreation {
     }
 }
 
-impl<'a> Interactable<'a> for LinkCreation {
+impl<'a, 'b> Interactable<'a, 'b> for LinkCreation {
     type InteractionResponse = LinkCreationInteractionResponse;
     type NoHoverExtraData = ();
-    type HoverExtraData = (&'a Node, &'a NodeDrawData);
+    type HoverExtraData = (&'a Node<'a>, &'a NodeDrawData);
 
     fn should_interact(ui: &Ui, response: &Response) -> bool {
         // link creation start or end
@@ -214,9 +214,9 @@ impl Link {
     #[inline]
     fn get_node<'a>(
         link_node_id: Id,
-        nodes: &'a [Node],
+        nodes: &'a [Node<'_>],
         nodes_draw_data: &'a [NodeDrawData],
-    ) -> Option<(&'a Node, &'a NodeDrawData)> {
+    ) -> Option<(&'a Node<'a>, &'a NodeDrawData)> {
         nodes
             .iter()
             .zip(nodes_draw_data.iter())
@@ -226,16 +226,16 @@ impl Link {
     #[inline]
     fn get_param<'a>(
         link_param_id: Id,
-        node: &'a Node,
+        node: &'a Node<'_>,
         node_draw_data: &'a NodeDrawData,
-    ) -> Option<(&'a Parameter, &'a ParameterDrawData)> {
+    ) -> Option<(&'a Parameter<'a>, &'a ParameterDrawData)> {
         node.parameters
             .iter()
             .zip(node_draw_data.parameters_draw_data.iter())
             .find(|(param, _param_draw_data)| param.id == link_param_id)
     }
 
-    fn get_line(&self, nodes: &[Node], nodes_draw_data: &[NodeDrawData]) -> Line {
+    fn get_line(&self, nodes: &[Node<'_>], nodes_draw_data: &[NodeDrawData]) -> Line {
         let (node1, node1_draw_data) = Self::get_node(self.node1, nodes, nodes_draw_data)
             .expect("link has node id that doesn't exist");
         let (_param1, param1_draw_data) = Self::get_param(self.parameter1, node1, node1_draw_data)
@@ -257,7 +257,7 @@ impl Link {
         ui: &mut Ui,
         link_draw_data: &mut LinkDrawData,
         selected: &Option<Selected>,
-        nodes: &[Node],
+        nodes: &[Node<'_>],
         nodes_draw_data: &[NodeDrawData],
     ) {
         let line_width = 3.0;
@@ -411,7 +411,7 @@ struct ParameterDrawData {
     parameter_shape_idx: ParameterShapeIdx,
 }
 
-pub struct Parameter {
+pub struct Parameter<'a> {
     /// Id of the parameters, should be created from the node's id to
     /// ensure the parameters always are
     /// unique. `node_id.with(some_hashable)`
@@ -422,10 +422,10 @@ pub struct Parameter {
     shape: ParameterShape,
     /// Radius of the shape in grid space coordinates
     shape_radius: f32,
-    add_contents: Option<Box<dyn FnOnce(&mut Ui)>>,
+    add_contents: Option<Box<dyn FnOnce(&mut Ui) + 'a>>,
 }
 
-impl Parameter {
+impl<'a> Parameter<'a> {
     /// Create a new parameters, should always be an indirect call
     /// from the Node that will contain this parameter
     fn new(id: Id) -> Self {
@@ -439,23 +439,22 @@ impl Parameter {
         }
     }
 
-    pub fn param_type(mut self, param_type: ParameterType) -> Self {
+    pub fn param_type(&mut self, param_type: ParameterType) -> &mut Self {
         self.param_type = param_type;
         self
     }
 
-    pub fn shape(mut self, shape: ParameterShape) -> Self {
+    pub fn shape(&mut self, shape: ParameterShape) -> &mut Self {
         self.shape = shape;
         self
     }
 
-    pub fn shape_radius(mut self, shape_radius: f32) -> Self {
+    pub fn shape_radius(&mut self, shape_radius: f32) -> &mut Self {
         self.shape_radius = shape_radius;
         self
     }
 
-    // TODO: borrow add_contents for non static lifetime
-    pub fn show(mut self, add_contents: impl FnOnce(&mut Ui) + 'static) -> Self {
+    pub fn show(&mut self, add_contents: impl FnOnce(&mut Ui) + 'a) -> &mut Self {
         self.add_contents = Some(Box::new(add_contents));
         self
     }
@@ -567,7 +566,7 @@ impl Parameter {
 /// can be interacted with with the current state of input/events. If
 /// it is possible, then hover indepenent function is called. If this
 /// fails to interact, then hover dependent function is called.
-trait Interactable<'a> {
+trait Interactable<'a, 'b> {
     type InteractionResponse;
     type NoHoverExtraData;
     type HoverExtraData;
@@ -636,13 +635,13 @@ struct NodeDrawData {
     node_shape_idx: NodeShapeIdx,
 }
 
-pub struct Node {
+pub struct Node<'a> {
     /// Id of the node, used to create unique Id(s) for the inputs and
     /// outputs
     id: Id,
 
     name: WidgetText,
-    parameters: Vec<Parameter>,
+    parameters: Vec<Parameter<'a>>,
 
     /// Position of top left of the node in the node graph, it not
     /// strictly the top left, it is roughly the top left of the node.
@@ -654,7 +653,7 @@ pub struct Node {
     width: f32,
 }
 
-impl Node {
+impl Node<'_> {
     pub fn new(name: impl Into<WidgetText>, position: Pos2) -> Self {
         let name = name.into();
         Self {
@@ -668,16 +667,6 @@ impl Node {
 
     pub fn id(mut self, id: Id) -> Self {
         self.id = id;
-        self
-    }
-
-    pub fn parameter(
-        mut self,
-        param_id: impl Hash,
-        build_parameter: impl FnOnce(Parameter) -> Parameter,
-    ) -> Self {
-        let parameter = Parameter::new(self.id.with(param_id));
-        self.parameters.push(build_parameter(parameter));
         self
     }
 
@@ -838,6 +827,19 @@ impl Node {
     }
 }
 
+impl<'a> Node<'a> {
+    pub fn parameter(
+        mut self,
+        param_id: impl Hash,
+        build_parameter: impl FnOnce(&mut Parameter<'a>),
+    ) -> Self {
+        let mut parameter = Parameter::new(self.id.with(param_id));
+        build_parameter(&mut parameter);
+        self.parameters.push(parameter);
+        self
+    }
+}
+
 struct InteractionResponse {
     /// Currently selected nodes
     selected_nodes: Vec<Id>,
@@ -971,10 +973,10 @@ impl NodeGraph {
     }
 
     #[must_use]
-    pub fn show<R>(
+    pub fn show<'n, R>(
         mut self,
         ui: &mut Ui,
-        mut nodes: Vec<Node>,
+        mut nodes: Vec<Node<'n>>,
         links: &[Link],
         add_contents: impl FnOnce(&mut Ui) -> R,
     ) -> NodeGraphResponse<R> {
@@ -1146,7 +1148,7 @@ impl NodeGraph {
     fn setup_shapes(
         &mut self,
         ui: &mut Ui,
-        nodes: &mut [Node],
+        nodes: &mut [Node<'_>],
         links: &[Link],
         transform: &ScreenTransform,
     ) -> (Vec<LinkDrawData>, Vec<NodeDrawData>) {
@@ -1186,7 +1188,7 @@ impl NodeGraph {
         selected_nodes: &[Id],
         selected_links: &[Id],
         transform: &ScreenTransform,
-        nodes: &[Node],
+        nodes: &[Node<'_>],
         nodes_draw_data: &mut [NodeDrawData],
         links: &[Link],
         links_draw_data: &mut [LinkDrawData],
@@ -1252,7 +1254,7 @@ impl NodeGraph {
     fn draw_interaction_shapes(
         ui: &mut Ui,
         link_creation: &LinkCreation,
-        nodes: &[Node],
+        nodes: &[Node<'_>],
         nodes_draw_data: &[NodeDrawData],
     ) {
         link_creation.draw_shapes(ui, nodes, nodes_draw_data);
@@ -1263,7 +1265,7 @@ impl NodeGraph {
     /// the node along with the distance squared
     fn calculate_nearest_node(
         response: &Response,
-        nodes: &[Node],
+        nodes: &[Node<'_>],
         nodes_draw_data: &[NodeDrawData],
     ) -> Option<(usize, f32)> {
         let node_interaction_dist_sq = 16.0_f32.powi(2);
@@ -1323,18 +1325,18 @@ impl NodeGraph {
 
     #[allow(clippy::too_many_arguments)]
     #[must_use]
-    fn handle_interactions(
-        &mut self,
+    fn handle_interactions<'n, 'a>(
+        &'a mut self,
         ui: &Ui,
         response: &Response,
         mut selected_nodes: Vec<Id>,
         mut selected_links: Vec<Id>,
         link_creation: &mut LinkCreation,
-        nodes: &mut [Node],
+        nodes: &'a mut [Node<'n>],
         nodes_draw_data: &[NodeDrawData],
         links: &[Link],
         links_draw_data: &[LinkDrawData],
-        transform: &mut ScreenTransform,
+        transform: &'a mut ScreenTransform,
     ) -> InteractionResponse {
         let node_data = Self::calculate_nearest_node(response, nodes, nodes_draw_data);
         let link_data = Self::calculate_nearest_link(response, links, links_draw_data);
@@ -1492,8 +1494,8 @@ impl<'a> NodeGraphNoHoverData<'a> {
     }
 }
 
-struct NodeGraphHoverData<'a> {
-    nodes: &'a mut [Node],
+struct NodeGraphHoverData<'n, 'a> {
+    nodes: &'a mut [Node<'n>],
     selected_nodes: &'a mut Vec<Id>,
     selected_links: &'a mut Vec<Id>,
     /// If a node exists within the interaction distance, must be
@@ -1505,9 +1507,9 @@ struct NodeGraphHoverData<'a> {
     transform: &'a mut ScreenTransform,
 }
 
-impl<'a> NodeGraphHoverData<'a> {
+impl<'n, 'a> NodeGraphHoverData<'n, 'a> {
     pub fn new(
-        nodes: &'a mut [Node],
+        nodes: &'a mut [Node<'n>],
         selected_nodes: &'a mut Vec<Id>,
         selected_links: &'a mut Vec<Id>,
         node_id: Option<Id>,
@@ -1525,10 +1527,10 @@ impl<'a> NodeGraphHoverData<'a> {
     }
 }
 
-impl<'a> Interactable<'a> for NodeGraph {
+impl<'n: 'a, 'a> Interactable<'n, 'a> for NodeGraph {
     type InteractionResponse = NodeGraphInteractionResponse;
     type NoHoverExtraData = NodeGraphNoHoverData<'a>;
-    type HoverExtraData = NodeGraphHoverData<'a>;
+    type HoverExtraData = NodeGraphHoverData<'n, 'a>;
 
     /// This does not include the nodes or links or any sub component
     /// of the node graph. Applies to only events that are global but
