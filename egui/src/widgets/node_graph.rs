@@ -1010,7 +1010,12 @@ impl NodeGraph {
         };
 
         // Allocate the space.
-        let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+        //
+        // Currently do not sense anything (thus Sense::hover). After
+        // all the child elements are drawn, this rect should sense
+        // for interactions. If a Sense is provided here, it will
+        // prevent the child elements from sensing any interactions.
+        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
 
         // Load or initialize the memory.
         let node_graph_id = ui.make_persistent_id(self.id_source);
@@ -1093,6 +1098,16 @@ impl NodeGraph {
             &mut links_draw_data,
         );
 
+        // Add the given contents to the Ui. Note that this is done
+        // after drawing all the elements of the node graph but before
+        // interacting with any of the elements of the node graph.
+        let inner = add_contents(&mut ui);
+
+        // Sense for interactions with the background rect after all
+        // the child elements have been drawn and possibly interacted
+        // with.
+        let response = response.interact(Sense::click_and_drag());
+
         let mut transform = transform;
         let InteractionResponse {
             selected_nodes,
@@ -1114,8 +1129,6 @@ impl NodeGraph {
         );
 
         Self::draw_interaction_shapes(&mut ui, &link_creation, &nodes, &nodes_draw_data);
-
-        let inner = add_contents(&mut ui);
 
         let memory = NodeGraphMemory {
             last_screen_transform: transform,
