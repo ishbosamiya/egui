@@ -25,12 +25,14 @@ impl Line {
     /// distance squared to the given position
     ///
     /// reference:
-    /// <https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line#Line_defined_by_two_points>
+    /// <https://math.stackexchange.com/a/330329>
     pub fn distance_sq_to_pos(&self, pos: Pos2) -> f32 {
-        ((self.p2.x - self.p1.x) * (self.p1.y - pos.y)
-            - (self.p1.x - pos.x) * (self.p2.y - self.p1.y))
-            .powi(2)
-            / ((self.p2.x - self.p1.x).powi(2) + (self.p2.y - self.p1.y).powi(2))
+        let dot = |p1: &Vec2, p2: &Vec2| p1.x * p2.x + p1.y * p2.y;
+
+        let t = dot(&(pos - self.p1), &(self.p2 - self.p1)) / (self.p2 - self.p1).length_sq();
+        let t = t.max(0.0).min(1.0);
+
+        ((self.p1 + t * (self.p2 - self.p1)) - pos).length_sq()
     }
 }
 
