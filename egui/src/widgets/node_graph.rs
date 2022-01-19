@@ -1489,6 +1489,7 @@ impl NodeGraph {
                     ui,
                     response,
                     NodeGraphNoHoverData::new(
+                        links,
                         &mut selected_nodes,
                         &mut selected_links,
                         node_id,
@@ -1616,6 +1617,7 @@ impl NodeGraphInteractionResponse {
 }
 
 struct NodeGraphNoHoverData<'a> {
+    links: &'a [Link],
     selected_nodes: &'a mut Vec<Id>,
     selected_links: &'a mut Vec<Id>,
     /// If a node exists within the interaction distance, must be
@@ -1628,12 +1630,14 @@ struct NodeGraphNoHoverData<'a> {
 
 impl<'a> NodeGraphNoHoverData<'a> {
     pub fn new(
+        links: &'a [Link],
         selected_nodes: &'a mut Vec<Id>,
         selected_links: &'a mut Vec<Id>,
         node_id: Option<Id>,
         link_id: Option<Id>,
     ) -> Self {
         Self {
+            links,
             selected_nodes,
             selected_links,
             node_id,
@@ -1714,6 +1718,7 @@ impl<'n: 'a, 'a> Interactable<'n, 'a> for NodeGraph {
         ui: &Ui,
         response: &Response,
         NodeGraphNoHoverData {
+            links,
             selected_nodes,
             selected_links,
             node_id,
@@ -1738,10 +1743,35 @@ impl<'n: 'a, 'a> Interactable<'n, 'a> for NodeGraph {
                 delete_nodes.append(selected_nodes);
                 Some(delete_nodes)
             };
+
+            // need to delete any links that link to any nodes that will be deleted
+            let delete_links = delete_nodes.as_ref().and_then(|delete_nodes| {
+                let delete_links: Vec<_> = links
+                    .iter()
+                    .filter_map(|link| {
+                        delete_nodes
+                            .iter()
+                            .any(|delete_node| {
+                                *delete_node == link.node1 || *delete_node == link.node2
+                            })
+                            .then(|| link.id)
+                    })
+                    .collect();
+                if delete_links.is_empty() {
+                    None
+                } else {
+                    Some(delete_links)
+                }
+            });
+
             let delete_links = if selected_links.is_empty() {
-                None
+                delete_links
             } else {
-                let mut delete_links = Vec::new();
+                let mut delete_links = if let Some(delete_links) = delete_links {
+                    delete_links
+                } else {
+                    Vec::new()
+                };
                 delete_links.append(selected_links);
                 Some(delete_links)
             };
