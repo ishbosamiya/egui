@@ -424,6 +424,8 @@ pub struct Parameter<'a> {
     shape: ParameterShape,
     /// Radius of the shape in grid space coordinates
     shape_radius: f32,
+    /// Padding around the shape
+    shape_padding: f32,
     add_contents: Option<Box<dyn FnOnce(&mut Ui) + 'a>>,
 }
 
@@ -437,6 +439,7 @@ impl<'a> Parameter<'a> {
             param_type: ParameterType::default(),
             shape: ParameterShape::default(),
             shape_radius: 0.02,
+            shape_padding: 0.01,
             add_contents: None,
         }
     }
@@ -456,13 +459,23 @@ impl<'a> Parameter<'a> {
         self
     }
 
+    pub fn shape_padding(&mut self, shape_padding: f32) -> &mut Self {
+        self.shape_padding = shape_padding;
+        self
+    }
+
     pub fn show(&mut self, add_contents: impl FnOnce(&mut Ui) + 'a) -> &mut Self {
         self.add_contents = Some(Box::new(add_contents));
         self
     }
 
     #[must_use]
-    fn setup_shapes(&mut self, ui: &mut Ui, node_width: f32) -> ParameterDrawData {
+    fn setup_shapes(
+        &mut self,
+        ui: &mut Ui,
+        node_width: f32,
+        transform: &ScreenTransform,
+    ) -> ParameterDrawData {
         let shape_idxs = if !matches!(self.param_type, ParameterType::NoLink) {
             Some(
                 (0..self.shape.get_num_shapes())
@@ -472,6 +485,12 @@ impl<'a> Parameter<'a> {
         } else {
             None
         };
+
+        // need to account for the shape width and padding
+        let shape_padding_screen_space = self.shape_padding * transform.scale_x();
+        let shape_radius_screen_space = self.shape_radius * transform.scale_x();
+        let contents_width =
+            node_width - 2.0 * (shape_radius_screen_space + shape_padding_screen_space);
 
         // the contents have to be drawn in this first pass, it is not
         // possible currently to postone this, once egui supports
@@ -484,7 +503,7 @@ impl<'a> Parameter<'a> {
                 ParameterType::Input | ParameterType::NoLink => Layout::left_to_right(),
                 ParameterType::Output => Layout::right_to_left(),
             };
-            ui.allocate_ui_with_layout(Vec2::new(node_width, 0.0), layout, add_contents)
+            ui.allocate_ui_with_layout(Vec2::new(contents_width, 0.0), layout, add_contents)
                 .response
                 .rect
         });
@@ -504,8 +523,7 @@ impl<'a> Parameter<'a> {
     ) {
         if let Some(shape_idxs) = &draw_data.parameter_shape_idx.shape_idxs {
             if let Some(contents_rect) = draw_data.contents_rect {
-                let shape_padding = 0.01;
-                let shape_padding_screen_space = shape_padding * transform.scale_x();
+                let shape_padding_screen_space = self.shape_padding * transform.scale_x();
                 let shape_radius_screen_space = self.shape_radius * transform.scale_x();
                 let shape_center = match self.param_type {
                     ParameterType::Input => {
@@ -648,7 +666,7 @@ pub struct Node<'a> {
     /// Position of top left of the node in the node graph, it not
     /// strictly the top left, it is roughly the top left of the node.
     position: Pos2,
-    /// Width of the node
+    /// Width of the node.
     ///
     /// TODO: width is currently in screen space, need to convert it
     /// to the node graph space
@@ -680,8 +698,20 @@ impl Node<'_> {
     #[must_use]
     fn setup_shapes(&mut self, ui: &mut Ui, transform: &ScreenTransform) -> NodeDrawData {
         let node_position = transform.transformed_pos(&self.position);
+        let parameter_shape_total_radius = self
+            .parameters
+            .iter()
+            .map(|parameter| parameter.shape_radius + parameter.shape_padding)
+            .reduce(f32::max)
+            .unwrap_or(0.0);
+        let parameter_shape_total_radius_screen_space =
+            parameter_shape_total_radius * transform.scale_x();
         let mut ui = ui.child_ui(
-            Rect::from_two_pos(node_position, node_position + Vec2::new(self.width, 0.0)),
+            Rect::from_two_pos(
+                node_position + Vec2::new(parameter_shape_total_radius_screen_space, 0.0),
+                node_position
+                    + Vec2::new(self.width - parameter_shape_total_radius_screen_space, 0.0),
+            ),
             *ui.layout(),
         );
 
@@ -692,7 +722,7 @@ impl Node<'_> {
         let parameters_draw_data = self
             .parameters
             .iter_mut()
-            .map(|parameter| parameter.setup_shapes(&mut ui, self.width))
+            .map(|parameter| parameter.setup_shapes(&mut ui, self.width, transform))
             .collect();
 
         NodeDrawData {
@@ -763,15 +793,20 @@ impl Node<'_> {
         }
 
         let total_parameters_rect = self.calculate_total_parameters_rect(node_draw_data);
+        let min_background_rect = Rect::from_min_size(
+            transform.transformed_pos(&self.position),
+            Vec2::new(self.width, 0.0),
+        )
+        .union(total_parameters_rect);
 
         // handle heading
         let heading_rect = {
-            let heading_pos_center_bottom = total_parameters_rect.center_top();
+            let heading_pos_center_bottom = min_background_rect.center_top();
             let heading_galley = ui.fonts().layout(
                 self.name.text().to_string(),
                 TextStyle::Body,
                 heading_color,
-                total_parameters_rect.width(),
+                min_background_rect.width(),
             );
             let heading_rect = Align2::LEFT_BOTTOM.anchor_rect(Rect::from_two_pos(
                 heading_pos_center_bottom + Vec2::new(-heading_galley.size().x * 0.5, 0.0),
@@ -786,7 +821,7 @@ impl Node<'_> {
             heading_rect
         };
 
-        let background_rect = total_parameters_rect.union(heading_rect);
+        let background_rect = min_background_rect.union(heading_rect);
 
         // heading background
         {
@@ -868,7 +903,11 @@ impl<'a> Interactable<'a, '_> for Node<'_> {
         hover_pos: Pos2,
         node_draw_data: Self::HoverExtraData,
     ) -> Option<Self::InteractionResponse> {
-        let node_width_interaction_dist_sq = 5.0_f32.powi(2);
+        // TODO: make the interaction know that width adjustment is
+        // active so no other interactions should be processed. Right
+        // now it relies on the fact that the velocity of the pointer
+        // does not exceed some value and this is not guaranteed.
+        let node_width_interaction_dist_sq = 8.0_f32.powi(2);
 
         // resize node
         if response.dragged_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
@@ -879,13 +918,6 @@ impl<'a> Interactable<'a, '_> for Node<'_> {
                 ui.painter().line_segment(
                     [line.p1, line.p2],
                     Stroke::new(2.0, Color32::TEMPORARY_COLOR),
-                );
-
-                ui.painter().debug_text(
-                    rect.right_bottom(),
-                    Align2::LEFT_TOP,
-                    Color32::WHITE,
-                    format!("{} {}", self.width, response.drag_delta().x),
                 );
 
                 self.width += response.drag_delta().x;
@@ -1154,6 +1186,19 @@ impl NodeGraph {
             links,
             &mut links_draw_data,
         );
+
+        // Set width of node to be the drawn width. This is done
+        // before the interaction so that the interaction can reduce
+        // the node width as well, but it should first start with the
+        // correct node width which is set here.
+        nodes
+            .iter_mut()
+            .zip(nodes_draw_data.iter())
+            .for_each(|(node, node_draw_data)| {
+                node.width = node
+                    .width
+                    .max(node_draw_data.background_rect.unwrap().width());
+            });
 
         // Add the given contents to the Ui. Note that this is done
         // after drawing all the elements of the node graph but before
