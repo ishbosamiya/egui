@@ -842,6 +842,60 @@ impl<'a> Node<'a> {
     }
 }
 
+impl<'a> Interactable<'a, '_> for Node<'_> {
+    type InteractionResponse = ();
+    type NoHoverExtraData = ();
+    type HoverExtraData = &'a NodeDrawData;
+
+    fn should_interact(ui: &Ui, response: &Response) -> bool {
+        // resize node
+        response.dragged_by(PointerButton::Primary) && ui.input().modifiers.is_none()
+    }
+
+    fn interact_hover_independent(
+        &mut self,
+        _ui: &Ui,
+        _response: &Response,
+        _extra_data: Self::NoHoverExtraData,
+    ) -> Option<Self::InteractionResponse> {
+        None
+    }
+
+    fn interact_on_hover(
+        &mut self,
+        ui: &Ui,
+        response: &Response,
+        hover_pos: Pos2,
+        node_draw_data: Self::HoverExtraData,
+    ) -> Option<Self::InteractionResponse> {
+        let node_width_interaction_dist_sq = 5.0_f32.powi(2);
+
+        // resize node
+        if response.dragged_by(PointerButton::Primary) && ui.input().modifiers.is_none() {
+            let rect = node_draw_data.background_rect.unwrap();
+            let line = Line::new(rect.right_top(), rect.right_bottom());
+            let dist_sq = line.distance_sq_to_pos(hover_pos);
+            if dist_sq < node_width_interaction_dist_sq {
+                ui.painter().line_segment(
+                    [line.p1, line.p2],
+                    Stroke::new(2.0, Color32::TEMPORARY_COLOR),
+                );
+
+                ui.painter().debug_text(
+                    rect.right_bottom(),
+                    Align2::LEFT_TOP,
+                    Color32::WHITE,
+                    format!("{} {}", self.width, response.drag_delta().x),
+                );
+
+                self.width += response.drag_delta().x;
+                return Some(());
+            }
+        }
+        None
+    }
+}
+
 struct InteractionResponse {
     /// Currently selected nodes
     selected_nodes: Vec<Id>,
@@ -1066,10 +1120,11 @@ impl NodeGraph {
                 .unwrap_or(selected_nodes.len())
         });
 
-        // force nodes to their respective positions
+        // force nodes to their respective positions and widths
         for node in nodes.iter_mut() {
             if let Some(data) = node_data.get(&node.id) {
                 node.position = data.position;
+                node.width = data.width;
             }
         }
 
@@ -1371,6 +1426,19 @@ impl NodeGraph {
                     };
                 }
             }
+            if Node::should_interact(ui, response) {
+                for node in nodes.iter_mut() {
+                    if node.interact_hover_independent(ui, response, ()).is_some() {
+                        return InteractionResponse {
+                            selected_nodes,
+                            selected_links,
+                            add_link: None,
+                            delete_nodes: None,
+                            delete_links: None,
+                        };
+                    }
+                }
+            }
             if Self::should_interact(ui, response) {
                 if let Some(response) = self.interact_hover_independent(
                     ui,
@@ -1414,6 +1482,26 @@ impl NodeGraph {
                                 selected_nodes,
                                 selected_links,
                                 add_link: response.add_link,
+                                delete_nodes: None,
+                                delete_links: None,
+                            };
+                        }
+                    }
+                }
+                if let Some((node_index, _dist_sq)) = node_data {
+                    if Node::should_interact(ui, response) {
+                        // node specific interaction
+
+                        let node = &mut nodes[node_index];
+                        let node_draw_data = &nodes_draw_data[node_index];
+                        if node
+                            .interact_on_hover(ui, response, hover_pos, node_draw_data)
+                            .is_some()
+                        {
+                            return InteractionResponse {
+                                selected_nodes,
+                                selected_links,
+                                add_link: None,
                                 delete_nodes: None,
                                 delete_links: None,
                             };
