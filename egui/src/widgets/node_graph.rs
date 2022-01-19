@@ -422,10 +422,6 @@ pub struct Parameter<'a> {
 
     param_type: ParameterType,
     shape: ParameterShape,
-    /// Radius of the shape in grid space coordinates
-    shape_radius: f32,
-    /// Padding around the shape
-    shape_padding: f32,
     add_contents: Option<Box<dyn FnOnce(&mut Ui) + 'a>>,
 }
 
@@ -438,8 +434,6 @@ impl<'a> Parameter<'a> {
 
             param_type: ParameterType::default(),
             shape: ParameterShape::default(),
-            shape_radius: 0.02,
-            shape_padding: 0.01,
             add_contents: None,
         }
     }
@@ -454,28 +448,13 @@ impl<'a> Parameter<'a> {
         self
     }
 
-    pub fn shape_radius(&mut self, shape_radius: f32) -> &mut Self {
-        self.shape_radius = shape_radius;
-        self
-    }
-
-    pub fn shape_padding(&mut self, shape_padding: f32) -> &mut Self {
-        self.shape_padding = shape_padding;
-        self
-    }
-
     pub fn show(&mut self, add_contents: impl FnOnce(&mut Ui) + 'a) -> &mut Self {
         self.add_contents = Some(Box::new(add_contents));
         self
     }
 
     #[must_use]
-    fn setup_shapes(
-        &mut self,
-        ui: &mut Ui,
-        node_width: f32,
-        transform: &ScreenTransform,
-    ) -> ParameterDrawData {
+    fn setup_shapes(&mut self, ui: &mut Ui, contents_width: f32) -> ParameterDrawData {
         let shape_idxs = if !matches!(self.param_type, ParameterType::NoLink) {
             Some(
                 (0..self.shape.get_num_shapes())
@@ -485,12 +464,6 @@ impl<'a> Parameter<'a> {
         } else {
             None
         };
-
-        // need to account for the shape width and padding
-        let shape_padding_screen_space = self.shape_padding * transform.scale_x();
-        let shape_radius_screen_space = self.shape_radius * transform.scale_x();
-        let contents_width =
-            node_width - 2.0 * (shape_radius_screen_space + shape_padding_screen_space);
 
         // the contents have to be drawn in this first pass, it is not
         // possible currently to postone this, once egui supports
@@ -518,13 +491,12 @@ impl<'a> Parameter<'a> {
     fn draw_shapes(
         &self,
         ui: &mut Ui,
+        shape_radius_screen_space: f32,
+        shape_padding_screen_space: f32,
         draw_data: &mut ParameterDrawData,
-        transform: &ScreenTransform,
     ) {
         if let Some(shape_idxs) = &draw_data.parameter_shape_idx.shape_idxs {
             if let Some(contents_rect) = draw_data.contents_rect {
-                let shape_padding_screen_space = self.shape_padding * transform.scale_x();
-                let shape_radius_screen_space = self.shape_radius * transform.scale_x();
                 let shape_center = match self.param_type {
                     ParameterType::Input => {
                         contents_rect.left_center()
@@ -661,6 +633,11 @@ pub struct Node<'a> {
     id: Id,
 
     name: WidgetText,
+
+    /// Radius of the shape in grid space coordinates
+    parameter_shape_radius: f32,
+    /// Padding around the shape
+    parameter_shape_padding: f32,
     parameters: Vec<Parameter<'a>>,
 
     /// Position of top left of the node in the node graph, it not
@@ -679,6 +656,8 @@ impl Node<'_> {
         Self {
             id: Id::new(name.text()),
             name,
+            parameter_shape_radius: 0.02,
+            parameter_shape_padding: 0.01,
             parameters: Vec::new(),
             position,
             width: 100.0,
@@ -690,6 +669,16 @@ impl Node<'_> {
         self
     }
 
+    pub fn parameter_shape_radius(mut self, parameter_shape_radius: f32) -> Self {
+        self.parameter_shape_radius = parameter_shape_radius;
+        self
+    }
+
+    pub fn parameter_shape_padding(mut self, parameter_shape_padding: f32) -> Self {
+        self.parameter_shape_padding = parameter_shape_padding;
+        self
+    }
+
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
@@ -698,12 +687,8 @@ impl Node<'_> {
     #[must_use]
     fn setup_shapes(&mut self, ui: &mut Ui, transform: &ScreenTransform) -> NodeDrawData {
         let node_position = transform.transformed_pos(&self.position);
-        let parameter_shape_total_radius = self
-            .parameters
-            .iter()
-            .map(|parameter| parameter.shape_radius + parameter.shape_padding)
-            .reduce(f32::max)
-            .unwrap_or(0.0);
+        let parameter_shape_total_radius =
+            self.parameter_shape_radius + self.parameter_shape_padding;
         let parameter_shape_total_radius_screen_space =
             parameter_shape_total_radius * transform.scale_x();
         let mut ui = ui.child_ui(
@@ -722,7 +707,12 @@ impl Node<'_> {
         let parameters_draw_data = self
             .parameters
             .iter_mut()
-            .map(|parameter| parameter.setup_shapes(&mut ui, self.width, transform))
+            .map(|parameter| {
+                parameter.setup_shapes(
+                    &mut ui,
+                    self.width - 2.0 * parameter_shape_total_radius_screen_space,
+                )
+            })
             .collect();
 
         NodeDrawData {
@@ -784,11 +774,21 @@ impl Node<'_> {
 
         // parameter shapes
         {
+            let parameter_shape_radius_screen_space =
+                self.parameter_shape_radius * transform.scale_x();
+            let parameter_shape_padding_screen_space =
+                self.parameter_shape_padding * transform.scale_x();
+
             self.parameters
                 .iter()
                 .zip(node_draw_data.parameters_draw_data.iter_mut())
                 .for_each(|(parameter, parameter_draw_data)| {
-                    parameter.draw_shapes(ui, parameter_draw_data, transform);
+                    parameter.draw_shapes(
+                        ui,
+                        parameter_shape_radius_screen_space,
+                        parameter_shape_padding_screen_space,
+                        parameter_draw_data,
+                    );
                 });
         }
 
