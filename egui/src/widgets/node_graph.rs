@@ -643,6 +643,7 @@ pub struct Node<'a> {
     /// Position of top left of the node in the node graph, it not
     /// strictly the top left, it is roughly the top left of the node.
     position: Pos2,
+    force_position: Option<Pos2>,
     /// Width of the node.
     ///
     /// TODO: width is currently in screen space, need to convert it
@@ -660,6 +661,7 @@ impl Node<'_> {
             parameter_shape_padding: 0.01,
             parameters: Vec::new(),
             position,
+            force_position: None,
             width: 100.0,
         }
     }
@@ -679,9 +681,18 @@ impl Node<'_> {
         self
     }
 
+    pub fn force_position(mut self, position: Pos2) -> Self {
+        self.force_position = Some(position);
+        self
+    }
+
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
+    }
+
+    pub fn get_id(&self) -> Id {
+        self.id
     }
 
     #[must_use]
@@ -1155,7 +1166,11 @@ impl NodeGraph {
         // force nodes to their respective positions and widths
         for node in nodes.iter_mut() {
             if let Some(data) = node_data.get(&node.id) {
-                node.position = data.position;
+                node.position = if let Some(position) = node.force_position {
+                    position
+                } else {
+                    data.position
+                };
                 node.width = data.width;
             }
         }
