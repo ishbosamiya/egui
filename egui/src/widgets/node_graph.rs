@@ -1066,7 +1066,7 @@ impl NodeGraph {
         ui: &mut Ui,
         mut nodes: Vec<Node<'n>>,
         links: &[Link],
-        add_contents: impl FnOnce(&mut Ui) -> R,
+        node_graph_ui_access: impl FnOnce(&NodeGraphUi<'_>) -> R,
     ) -> NodeGraphResponse<R> {
         let center_x_axis = false;
         let center_y_axis = false;
@@ -1200,11 +1200,6 @@ impl NodeGraph {
                     .max(node_draw_data.background_rect.unwrap().width());
             });
 
-        // Add the given contents to the Ui. Note that this is done
-        // after drawing all the elements of the node graph but before
-        // interacting with any of the elements of the node graph.
-        let inner = add_contents(&mut ui);
-
         // Sense for interactions with the background rect after all
         // the child elements have been drawn and possibly interacted
         // with.
@@ -1231,6 +1226,8 @@ impl NodeGraph {
         );
 
         Self::draw_interaction_shapes(&mut ui, &link_creation, &nodes, &nodes_draw_data);
+
+        let inner = node_graph_ui_access(&NodeGraphUi::new(&transform));
 
         let memory = NodeGraphMemory {
             last_screen_transform: transform,
@@ -1588,6 +1585,28 @@ impl NodeGraph {
             delete_nodes: None,
             delete_links: None,
         }
+    }
+}
+
+pub struct NodeGraphUi<'a> {
+    transform: &'a ScreenTransform,
+}
+
+impl<'a> NodeGraphUi<'a> {
+    fn new(transform: &'a ScreenTransform) -> Self {
+        Self { transform }
+    }
+
+    pub fn graph_bounds(&self) -> PlotBounds {
+        *self.transform.bounds()
+    }
+
+    pub fn node_graph_coords_from_screen(&self, pos: Pos2) -> Pos2 {
+        self.transform.untransform_pos(&pos)
+    }
+
+    pub fn screen_coords_from_node_graph(&self, pos: Pos2) -> Pos2 {
+        self.transform.transformed_pos(&pos)
     }
 }
 
